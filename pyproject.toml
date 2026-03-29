@@ -1,0 +1,42 @@
+[project]
+name = "perf-optimize"
+version = "0.1.0"
+description = "RL environment for teaching LLMs to write performant code using hardware performance counters"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "structlog>=24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "numpy>=2.0",
+    "scipy>=1.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/perf_optimize"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "variance: slow variance validation tests (deselect with '-m \"not variance\"')",
+    "integration: requires bwrap + gcc + perf",
+]
+addopts = "-m 'not variance'"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "RUF"]
