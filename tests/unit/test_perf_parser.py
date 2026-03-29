@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from perf_optimize.exceptions import CounterNotFoundError
+from perf_optimize.counters import AMD_ZEN, INTEL_CORE
+from perf_optimize.exceptions import (
+    CounterNotCountedError,
+    CounterNotFoundError,
+    CounterNotSupportedError,
+)
 from perf_optimize.perf_parser import parse_csv_line, parse_perf_output
 from perf_optimize.types import PerfCounters
 
@@ -162,27 +167,27 @@ class TestParseCsvLineSkipped:
     def test_too_few_fields(self) -> None:
         assert parse_csv_line("1234,,cycles") is None
 
-    def test_not_supported_returns_none(self) -> None:
-        """<not supported> means hardware doesn't have this counter -- skip gracefully."""
+    def test_not_supported_returns_string(self) -> None:
+        """<not supported> means hardware doesn't have this counter."""
         line = "<not supported>,,LLC-load-misses,0.00%,0,100.00,,"
-        assert parse_csv_line(line) is None
+        assert parse_csv_line(line) == "not_supported"
 
     def test_not_supported_without_r(self) -> None:
         line = "<not supported>,,LLC-load-misses,0,100.00,,"
-        assert parse_csv_line(line) is None
+        assert parse_csv_line(line) == "not_supported"
 
 
 class TestParseCsvLineNotCounted:
     """Tests for <not counted> lines (PMU scheduling failure)."""
 
-    def test_not_counted_returns_none(self) -> None:
-        """<not counted> is a PMU scheduling failure -- skip gracefully."""
+    def test_not_counted_returns_string(self) -> None:
+        """<not counted> is a PMU scheduling failure."""
         line = "<not counted>,,cycles,0,0.00"
-        assert parse_csv_line(line) is None
+        assert parse_csv_line(line) == "not_counted"
 
     def test_not_counted_with_unknown_event(self) -> None:
         line = "<not counted>,,,0,0.00"
-        assert parse_csv_line(line) is None
+        assert parse_csv_line(line) == "not_counted"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -194,7 +199,7 @@ class TestParsePerfOutputValid:
     """Tests for successful full-output parsing."""
 
     def test_output_with_r_flag(self) -> None:
-        result = parse_perf_output(REALISTIC_PERF_OUTPUT_WITH_R)
+        result = parse_perf_output(REALISTIC_PERF_OUTPUT_WITH_R, INTEL_CORE)
         assert isinstance(result, PerfCounters)
         assert result.cycles == 1523456789
         assert result.instructions == 3045678901
@@ -205,23 +210,28 @@ class TestParsePerfOutputValid:
         assert result.branch_misses == 890123
 
     def test_output_without_r_flag(self) -> None:
-        result = parse_perf_output(REALISTIC_PERF_OUTPUT_NO_R)
+        result = parse_perf_output(REALISTIC_PERF_OUTPUT_NO_R, INTEL_CORE)
         assert result.cycles == 1523456789
         assert result.instructions == 3045678901
 
     def test_real_amd_output_with_unsupported_counter(self) -> None:
-        """Real AMD output where LLC-load-misses is <not supported>."""
-        result = parse_perf_output(REAL_AMD_OUTPUT)
+        """Real AMD output where LLC-load-misses is <not supported>.
+
+        AMD_ZEN profile does not include LLC-load-misses, so it is
+        not in expected_events and the <not supported> line is ignored.
+        llc_load_misses remains None (unmapped).
+        """
+        result = parse_perf_output(REAL_AMD_OUTPUT, AMD_ZEN)
         assert result.cycles == 6482066
         assert result.instructions == 5241051
-        assert result.cache_references == 428288
+        assert result.cache_references is None  # not in AMD_ZEN profile
         assert result.cache_misses == 66993
         assert result.l1_dcache_load_misses == 133393
-        assert result.llc_load_misses == 0  # <not supported> -> 0
+        assert result.llc_load_misses is None  # not in AMD_ZEN profile
         assert result.branch_misses == 99442
 
     def test_ipc_derived_correctly(self) -> None:
-        result = parse_perf_output(REALISTIC_PERF_OUTPUT_WITH_R)
+        result = parse_perf_output(REALISTIC_PERF_OUTPUT_WITH_R, INTEL_CORE)
         expected_ipc = 3045678901 / 1523456789
         assert abs(result.ipc - expected_ipc) < 1e-9
 
@@ -239,7 +249,7 @@ class TestParsePerfOutputValid:
             "60,,LLC-load-misses,500,100.00\n"
             "70,,branch-misses,500,100.00\n"
         )
-        result = parse_perf_output(text)
+        result = parse_perf_output(text, INTEL_CORE)
         assert result.cycles == 1000
         assert result.instructions == 2000
         assert result.cache_references == 300
@@ -260,7 +270,7 @@ class TestParsePerfOutputValid:
             "12345,msec,task-clock,500,100.00\n"
             "99,,context-switches,500,100.00\n"
         )
-        result = parse_perf_output(text)
+        result = parse_perf_output(text, INTEL_CORE)
         assert result.cycles == 1000
         assert result.branch_misses == 70
 
@@ -275,12 +285,12 @@ class TestParsePerfOutputValid:
             "60,,LLC-load-misses,500,100.00\n"
             "70,,branch-misses,500,100.00\n"
         )
-        result = parse_perf_output(text)
+        result = parse_perf_output(text, INTEL_CORE)
         assert result.cycles == 1000
         assert result.instructions == 2000
 
-    def test_unsupported_counter_defaults_to_zero(self) -> None:
-        """If a non-essential counter is <not supported>, it defaults to 0."""
+    def test_unsupported_counter_raises_when_profiled(self) -> None:
+        """If a profiled event is <not supported>, raise CounterNotSupportedError."""
         text = (
             "1000,,cycles,500,100.00\n"
             "2000,,instructions,500,100.00\n"
@@ -290,8 +300,22 @@ class TestParsePerfOutputValid:
             "<not supported>,,LLC-load-misses,0,100.00\n"
             "70,,branch-misses,500,100.00\n"
         )
-        result = parse_perf_output(text)
-        assert result.llc_load_misses == 0
+        with pytest.raises(CounterNotSupportedError):
+            parse_perf_output(text, INTEL_CORE)
+
+    def test_unsupported_counter_ignored_when_not_profiled(self) -> None:
+        """If an event is <not supported> but not in the profile, ignore it."""
+        text = (
+            "1000,,cycles,500,100.00\n"
+            "2000,,instructions,500,100.00\n"
+            "300,,cache-references,500,100.00\n"
+            "40,,cache-misses,500,100.00\n"
+            "50,,L1-dcache-load-misses,500,100.00\n"
+            "<not supported>,,LLC-load-misses,0,100.00\n"
+            "70,,branch-misses,500,100.00\n"
+        )
+        result = parse_perf_output(text, AMD_ZEN)
+        assert result.llc_load_misses is None
         assert result.cycles == 1000
 
 
@@ -305,27 +329,27 @@ class TestParsePerfOutputErrors:
             "300,,cache-references,500,100.00\n"
         )
         with pytest.raises(CounterNotFoundError) as exc_info:
-            parse_perf_output(text)
+            parse_perf_output(text, INTEL_CORE)
         assert exc_info.value.counter == "cycles"
 
     def test_missing_instructions_raises(self) -> None:
         """instructions is a mandatory counter."""
         text = "1000,,cycles,500,100.00\n"
         with pytest.raises(CounterNotFoundError) as exc_info:
-            parse_perf_output(text)
+            parse_perf_output(text, INTEL_CORE)
         assert exc_info.value.counter == "instructions"
 
     def test_empty_output_raises(self) -> None:
         with pytest.raises(CounterNotFoundError):
-            parse_perf_output("")
+            parse_perf_output("", INTEL_CORE)
 
     def test_only_comments_raises(self) -> None:
         text = "# comment 1\n# comment 2\n"
         with pytest.raises(CounterNotFoundError):
-            parse_perf_output(text)
+            parse_perf_output(text, INTEL_CORE)
 
-    def test_not_counted_defaults_to_zero(self) -> None:
-        """<not counted> counter defaults to 0 if non-mandatory."""
+    def test_not_counted_profiled_event_raises(self) -> None:
+        """<not counted> on a profiled event raises CounterNotCountedError."""
         text = (
             "1000,,cycles,500,100.00\n"
             "2000,,instructions,500,100.00\n"
@@ -335,18 +359,17 @@ class TestParsePerfOutputErrors:
             "60,,LLC-load-misses,500,100.00\n"
             "70,,branch-misses,500,100.00\n"
         )
-        result = parse_perf_output(text)
-        assert result.cache_misses == 0
-        assert result.cycles == 1000
+        with pytest.raises(CounterNotCountedError):
+            parse_perf_output(text, INTEL_CORE)
 
     def test_not_counted_mandatory_counter_raises(self) -> None:
-        """<not counted> on cycles/instructions still fails (they're mandatory)."""
+        """<not counted> on cycles/instructions raises CounterNotCountedError."""
         text = (
             "<not counted>,,cycles,0,0.00\n"
             "2000,,instructions,500,100.00\n"
         )
-        with pytest.raises(CounterNotFoundError):
-            parse_perf_output(text)
+        with pytest.raises(CounterNotCountedError):
+            parse_perf_output(text, INTEL_CORE)
 
 
 class TestPerfCountersDataclass:

@@ -19,7 +19,6 @@ from perf_optimize.sandbox import PerfSandbox
 from perf_optimize.types import (
     CompilationSuccess,
     CounterVarianceStats,
-    PerfCounter,
     PerfCounters,
     VarianceReport,
 )
@@ -27,7 +26,7 @@ from tests.conftest import requires_all_tools
 
 FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "c_programs"
 N_SAMPLES = 50
-MATMUL_N = 512  # Large enough for measurable perf, small enough for reasonable runtime
+MATMUL_N = 512
 
 
 def _make_matmul_input(n: int, seed: int = 42) -> bytes:
@@ -41,36 +40,27 @@ def _compute_variance_report(
     samples: list[PerfCounters],
     config: SandboxConfig,
 ) -> VarianceReport:
-    """Compute CV for each counter across samples."""
-    stats: dict[PerfCounter, CounterVarianceStats] = {}
+    """Compute CV for each counter that is not None across samples."""
+    stats: dict[str, CounterVarianceStats] = {}
 
-    for counter in PerfCounter:
-        attr = counter.name.lower()
-        # Map enum name to dataclass field name
-        field_map = {
-            "cycles": "cycles",
-            "instructions": "instructions",
-            "cache_references": "cache_references",
-            "cache_misses": "cache_misses",
-            "l1_dcache_load_misses": "l1_dcache_load_misses",
-            "llc_load_misses": "llc_load_misses",
-            "branch_misses": "branch_misses",
-        }
-        field_name = field_map[attr]
+    # Check which fields are populated (not None) in the first sample
+    for field_name in config.hardware_profile.mapped_fields():
+        first_val = getattr(samples[0], field_name)
+        if first_val is None:
+            continue
+
         values = np.array([getattr(s, field_name) for s in samples])
 
         mean = float(np.mean(values))
         std = float(np.std(values, ddof=1))
         cv = std / mean if mean > 0 else 0.0
 
-        # Use appropriate threshold
-        if counter == PerfCounter.CYCLES:
-            threshold = config.cv_threshold_cycles
-        else:
-            threshold = config.cv_threshold_cache
+        threshold = (
+            config.cv_threshold_cycles if field_name == "cycles" else config.cv_threshold_cache
+        )
 
-        stats[counter] = CounterVarianceStats(
-            counter=counter,
+        stats[field_name] = CounterVarianceStats(
+            counter=field_name,
             mean=mean,
             std=std,
             cv=cv,
@@ -118,16 +108,15 @@ class TestVariance:
 
             report = _compute_variance_report(samples, config)
 
-            # Print the full report for analysis
-            for counter, stat in report.stats.items():
+            for field_name, stat in report.stats.items():
                 print(
-                    f"{counter.value}: mean={stat.mean:.0f} std={stat.std:.0f} "
+                    f"{field_name}: mean={stat.mean:.0f} std={stat.std:.0f} "
                     f"CV={stat.cv:.4f} ({stat.cv*100:.2f}%) "
                     f"threshold={stat.threshold*100:.0f}% "
                     f"{'PASS' if stat.passed else 'FAIL'}"
                 )
 
-            cycles_stat = report.stats[PerfCounter.CYCLES]
+            cycles_stat = report.stats["cycles"]
             assert cycles_stat.passed, (
                 f"Cycles CV={cycles_stat.cv:.4f} ({cycles_stat.cv*100:.2f}%) "
                 f"exceeds threshold {config.cv_threshold_cycles*100:.0f}%"
@@ -154,27 +143,21 @@ class TestVariance:
 
             report = _compute_variance_report(samples, config)
 
-            cache_counters = [
-                PerfCounter.CACHE_MISSES,
-                PerfCounter.L1_DCACHE_LOAD_MISSES,
-                PerfCounter.LLC_LOAD_MISSES,
-                PerfCounter.BRANCH_MISSES,
-            ]
+            cache_fields = ["cache_misses", "l1_dcache_load_misses", "branch_misses"]
             failures = [
-                report.stats[c] for c in cache_counters if not report.stats[c].passed
+                report.stats[f] for f in cache_fields
+                if f in report.stats and not report.stats[f].passed
             ]
 
             for f in failures:
                 print(
-                    f"FAIL: {f.counter.value} CV={f.cv:.4f} ({f.cv*100:.2f}%) "
+                    f"FAIL: {f.counter} CV={f.cv:.4f} ({f.cv*100:.2f}%) "
                     f"threshold={f.threshold*100:.0f}%"
                 )
 
             assert not failures, (
                 f"{len(failures)} cache counter(s) exceeded variance threshold: "
-                + ", ".join(
-                    f"{f.counter.value}={f.cv*100:.2f}%" for f in failures
-                )
+                + ", ".join(f"{f.counter}={f.cv*100:.2f}%" for f in failures)
             )
         finally:
             import shutil
@@ -182,7 +165,7 @@ class TestVariance:
             shutil.rmtree(work_dir, ignore_errors=True)
 
     async def test_all_counters_report(self) -> None:
-        """Generate full variance report for all counters."""
+        """Generate full variance report for all measured counters."""
         config = SandboxConfig()
         sandbox = PerfSandbox(config)
         work_dir, _input_data = await self._compile_matmul(sandbox)
@@ -198,12 +181,9 @@ class TestVariance:
 
             report = _compute_variance_report(samples, config)
 
-            # All counters should pass their respective thresholds
             assert report.all_passed, (
                 "Variance check failed for: "
-                + ", ".join(
-                    f"{f.counter.value}={f.cv*100:.2f}%" for f in report.failures
-                )
+                + ", ".join(f"{f.counter}={f.cv*100:.2f}%" for f in report.failures)
             )
         finally:
             import shutil
