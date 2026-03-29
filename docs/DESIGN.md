@@ -7,10 +7,11 @@ verifiers SDK and prime-rl training framework. It teaches LLM agents to optimize
 for hardware performance by providing structured feedback from Linux `perf` hardware
 performance counters.
 
-The agent receives a problem specification and a naive reference solution, then
-iteratively rewrites the solution to improve performance. Reward is derived from
-hardware counter improvements (cycles, cache misses, branch mispredictions), gated
-behind correctness verification via test suites.
+The agent receives a problem specification and a naive reference solution in one of
+four languages (C, Rust, Python, TypeScript), then iteratively rewrites the solution
+to improve performance. Reward is derived from hardware counter improvements (cycles,
+cache misses, branch mispredictions), gated behind correctness verification via test
+suites.
 
 ## Core Design Decisions
 
@@ -104,6 +105,32 @@ respond to memory layout changes even when overall cycles haven't improved much 
 **Wall-clock time** is tracked as a zero-weight metric for analysis and evaluation but
 does not contribute to the training reward. This creates an interesting evaluation
 dynamic: training on mechanistic hardware signals, evaluating on wall-clock.
+
+### Multi-Language Support
+
+The environment supports four languages: **C**, **Rust**, **Python**, and **TypeScript**.
+Each problem has reference solutions in all four languages.
+
+| Language | Compile | Run | Perf Signal | Optimization Space |
+|----------|---------|-----|-------------|-------------------|
+| C | gcc → binary | `./solution` | Best (direct HW) | Memory layout, SIMD, cache tiling |
+| Rust | rustc → binary | `./solution` | Best (direct HW) | Same as C + iterator patterns, unsafe |
+| Python | py_compile (syntax) | `python3 solution.py` | Good (NumPy = C under hood) | Loops → NumPy vectorization |
+| TypeScript | node --check (syntax) | `node --experimental-strip-types solution.ts` | Moderate (V8 JIT noise) | Algorithm, data structures, typed arrays |
+
+**Binary I/O format** is shared across all languages: int32 for N, then float32 arrays.
+Each language has its native way to read/write binary (fread, std::io, sys.stdin.buffer,
+Buffer/Float32Array). Expected test outputs are language-independent (same computation,
+same result).
+
+**LanguageConfig** defines how to compile, run, and sandbox each language. Runtime paths
+(rustup sysroot, nvm node directory) are resolved dynamically from the system, not
+hardcoded.
+
+**Perf measurement for interpreted languages:** perf stat measures the full process
+(interpreter + computation). For Python, NumPy-vectorized code shows dramatically
+fewer cycles than loop-based code because NumPy calls optimized BLAS/LAPACK. For
+TypeScript, V8's JIT adds warmup noise; `perf stat -r 5` helps average it out.
 
 ### Framework: Prime Intellect verifiers + prime-rl
 

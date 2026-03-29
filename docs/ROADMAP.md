@@ -35,54 +35,84 @@ and baseline perf measurements.
      conventions, test input/output format.
 
 1.2. Implement the first problem: **matmul** (NxN float matrix multiply).
-     - spec.md: problem description, I/O format (binary float arrays), constraints
-     - reference.c: naive triple-nested loop, no optimizations, compiled with -O2
-     - tests/: 5 input pairs (small N for correctness), expected outputs generated
-       **by compiling and running reference.c** (not computed in Python — float32
-       accumulation order differs between implementations)
-     - perf_input.bin: N=1024 input pair for performance measurement
-     - Validate: reference compiles, passes tests, perf counters are stable
+     - spec.md: problem description, binary I/O format (int32 N + float32 arrays)
+     - **4 reference solutions:** reference/solution.c, solution.rs, solution.py,
+       solution.ts — all using naive triple-nested loop, same binary I/O format
+     - tests/: 5 input pairs (small N), expected outputs generated **by compiling
+       and running the C reference** (canonical — same result for all languages
+       since binary I/O and float32 arithmetic should match)
+     - perf_input.bin: N=1024 input for performance measurement
+     - Validate: all 4 references compile, pass tests, perf counters are stable
      - **Note:** matmul_naive.c and matmul_tiled.c already exist in fixtures/c_programs/
-       from Phase 0. Move and adapt these as the matmul problem.
+       from Phase 0. Move and adapt these as the matmul C reference.
+     - **Python reference:** naive loops with struct.unpack + manual accumulation
+       (not numpy — that's the optimization the agent should discover)
+     - **TypeScript reference:** naive loops with Buffer + Float32Array
 
 1.3. Implement **stencil** (2D 5-point stencil, iterated).
      - Memory bandwidth bound, benefits from tiling and prefetch
      - Different bottleneck profile from matmul
+     - 4 reference solutions (C, Rust, Python, TypeScript)
 
 1.4. Implement **sort** (integer array sort, large N).
      - Branch-heavy, benefits from branchless techniques
      - Tests must verify ordering + stability if applicable
+     - 4 reference solutions
 
 1.5. Implement **nbody** (gravitational N-body simulation, single timestep).
      - Compute + memory bound, benefits from SoA layout and SIMD
      - Float comparison tolerance in test validation
+     - 4 reference solutions
 
 1.6. Implement **hash_table** (string key lookup benchmark).
      - Allocation + cache behavior, benefits from open addressing, cache-line
        alignment
      - Functional tests: insert N keys, look up all, verify all found
+     - 4 reference solutions
 
-1.7. For each problem, measure and record the reference perf counters. Store these
-     in a `reference_perf.json` alongside each problem. These become the baseline
-     for reward computation. **Format must include:**
-     - The `HardwareProfile.name` used (e.g., "amd_zen")
+1.7. For each problem **and each language**, measure and record reference perf
+     counters. Store in `reference_perf/{lang}_{profile}.json`. Format:
+     - `language`: "c", "rust", "python", "typescript"
+     - `hardware_profile`: "amd_zen" or "intel_core"
      - Counter values as `float | null` (matching PerfCounters semantics)
-     - Reference measurements are architecture-specific — re-measure if moving
-       between AMD and Intel nodes
+     - Reference measurements are architecture-specific AND language-specific.
+       Python/TS references will have dramatically higher cycle counts than C/Rust.
 
 1.8. Write `problems.py`: a loader that reads the problem directory structure and
-     constructs a HuggingFace Dataset with prompt, answer (None), and info columns.
+     constructs a HuggingFace Dataset. Must accept a `language` parameter to select
+     which reference solution and perf baseline to use.
 
-1.9. **Test output generation tooling:** Write a script/function that compiles each
-     reference.c and runs it against all test inputs to produce expected outputs.
-     This must be used instead of computing expected outputs independently (e.g.,
-     via NumPy) due to float32 accumulation order differences.
+1.9. **Test output generation tooling:** Write a script that compiles the C reference
+     for each problem and runs it against all test inputs to produce expected outputs.
+     These are shared across all 4 languages (same computation, same binary I/O).
+     All non-C references must be validated against the same expected outputs.
 
-**Deliverable:** `problems/` directory with 5 complete problems. `problems.py` module
-that produces a valid verifiers-compatible Dataset.
+**Problem directory structure:**
+```
+problems/
+  matmul/
+    spec.md
+    tests/
+      input_0.bin
+      expected_0.bin      # Generated from C reference (shared)
+    perf_input.bin
+    reference/
+      solution.c
+      solution.rs
+      solution.py
+      solution.ts
+    reference_perf/
+      c_amd_zen.json
+      rust_amd_zen.json
+      python_amd_zen.json
+      typescript_amd_zen.json
+```
 
-**Exit criteria:** All 5 problems have stable reference measurements and test suites
-that catch meaningful functional regressions.
+**Deliverable:** `problems/` directory with 5 complete problems × 4 languages.
+`problems.py` module that produces a valid verifiers-compatible Dataset.
+
+**Exit criteria:** All 5 problems × 4 languages have stable reference measurements
+and test suites that catch meaningful functional regressions.
 
 ---
 
@@ -104,9 +134,10 @@ that catch meaningful functional regressions.
      ```
 
 2.2. Implement `PerfOptimizeEnv(vf.MultiTurnEnv)`:
-     - `__init__`: accepts language, max_turns, problem filter args
-     - `setup_state`: loads problem info, initializes tracking (best_perf, turn
-       counter). Must detect or accept the `HardwareProfile`.
+     - `__init__`: accepts `language: Language`, max_turns, problem filter args.
+       Creates a `SandboxConfig` with `resolve_language_config(language)`.
+     - `setup_state`: loads problem info for the configured language, initializes
+       tracking (best_perf, turn counter). Uses language-specific reference perf.
      - `env_response`: extracts code via XMLParser, invokes PerfSandbox, formats
        feedback message, updates state. **Feedback should only show counters that
        are not None** — don't show "LLC-load-misses: N/A" on AMD, just omit it.
@@ -285,29 +316,29 @@ interpretable result about whether RL can internalize hardware performance model
 
 ## Phase 6: Expansion + Publishing
 
-**Goal:** Expand the problem bank, add languages, publish to the Environments Hub.
+**Goal:** Expand the problem bank and publish to the Environments Hub.
 
 **Tasks:**
 
 6.1. Add 10+ more problems covering: graph algorithms, string processing, image
-     convolution, tree operations, compression, parsing.
+     convolution, tree operations, compression, parsing. Each with 4 language
+     references.
 
-6.2. Add Rust language support: separate reference solutions, rustc in the bwrap
-     sandbox, same perf measurement pipeline. Rust is interesting because the
-     optimizer is stronger (LLVM), so the gap between naive and optimal is different.
+6.2. **Cross-language training analysis:** Compare training curves across C vs Rust
+     vs Python vs TypeScript. Do models learn different optimization strategies
+     per language? Is Rust harder to optimize (LLVM optimizer already aggressive)?
+     Does Python reward vectorization skills? Does TypeScript reward typed-array
+     usage?
 
-6.3. Add Python + NumPy/Cython support: tests whether the model learns to vectorize
-     via NumPy or use Cython for hot loops. Different optimization vocabulary.
-
-6.4. Publish the environment to the Prime Intellect Environments Hub:
+6.3. Publish the environment to the Prime Intellect Environments Hub:
      ```
      prime env push perf-optimize
      ```
 
-6.5. Test on their hosted training platform. Contact Prime Intellect about perf
+6.4. Test on their hosted training platform. Contact Prime Intellect about perf
      access in their sandbox infrastructure (this is a great conversation starter).
 
-6.6. Docker fallback for environments without perf access: measurement backend that
+6.5. Docker fallback for environments without perf access: measurement backend that
      uses wall-clock + instruction count (via `perf stat` where available, `time`
      where not). Degrades reward quality but enables broader deployment.
 
@@ -343,12 +374,12 @@ Phase 4. Phase 6 can begin after Phase 4 results are solid.
 | Phase | Estimated Time | Notes |
 |-------|---------------|-------|
 | 0 | ~~2-3 days~~ **Done** | Complete. Measurement pipeline validated on AMD. |
-| 1 | 3-4 days | 5 problems with careful test suite design |
+| 1 | 5-7 days | 5 problems × 4 languages with test suites |
 | 2 | 3-4 days | Verifiers integration, profile-aware reward |
 | 3 | 3-5 days | Includes possible SFT warmup |
 | 4 | 1-2 weeks | Longer training runs, hyperparameter sweeps |
 | 5 | 1-2 weeks | Multiple ablation runs + analysis |
-| 6 | 2-3 weeks | Multi-language, polish, publishing |
+| 6 | 2-3 weeks | More problems, cross-language analysis, publishing |
 
 Phases 1-3 (working trained model) are achievable in ~2 weeks of focused effort.
 The full roadmap through Phase 6 is roughly 2 months.

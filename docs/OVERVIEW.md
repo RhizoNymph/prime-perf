@@ -10,10 +10,16 @@ correctness verification.
 
 ## Subsystems
 
+### Languages (`src/perf_optimize/languages.py`)
+Defines `LanguageConfig` for C, Rust, Python, and TypeScript. Each config specifies
+how to compile (or syntax-check), execute, and sandbox the language. Runtime paths
+(rustup sysroot, nvm node dir) are resolved dynamically.
+
 ### Sandbox (`src/perf_optimize/sandbox.py`)
-Orchestrates code execution inside bubblewrap (bwrap) containers. Handles compilation
-(gcc), correctness testing, and performance measurement (perf stat). All operations
-are async via `asyncio.create_subprocess_exec`.
+Orchestrates code execution inside bubblewrap (bwrap) containers. Language-aware:
+handles compilation or syntax checking, correctness testing, and performance
+measurement (perf stat) for all 4 supported languages. All operations are async
+via `asyncio.create_subprocess_exec`.
 
 ### Hardware Profiles (`src/perf_optimize/counters.py`)
 Maps logical counter fields (e.g. `llc_load_misses`) to architecture-specific perf
@@ -73,10 +79,16 @@ Source Code (str)
 
 ## Features Index
 
+### languages
+- description: Multi-language support (C, Rust, Python, TypeScript) with dynamic path resolution
+- entry_points: [Language, LanguageConfig, resolve_language_config]
+- depends_on: []
+- doc: docs/features/languages.md
+
 ### sandbox
 - description: Bubblewrap-sandboxed code compilation, testing, and perf measurement
 - entry_points: [PerfSandbox.compile_and_run, PerfSandbox.measure_only, PerfSandbox.check_prerequisites]
-- depends_on: [perf_parser, bwrap_builder, config]
+- depends_on: [perf_parser, bwrap_builder, config, languages]
 - doc: docs/features/sandbox.md
 
 ### perf_parser
