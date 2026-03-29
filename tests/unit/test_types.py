@@ -7,57 +7,18 @@ import dataclasses
 import pytest
 
 from perf_optimize.types import (
+    PERF_COUNTER_FIELDS,
     CompilationFailure,
     CompilationOutcome,
     CompilationSuccess,
     CounterVarianceStats,
     ExecutionResult,
-    PerfCounter,
     PerfCounters,
     PerfCSVLine,
     TestReport,
     TestResult,
     VarianceReport,
 )
-
-# ---------------------------------------------------------------------------
-# PerfCounter enum
-# ---------------------------------------------------------------------------
-
-
-class TestPerfCounter:
-    """PerfCounter enum values must match exact perf CLI event strings."""
-
-    def test_cycles_value(self) -> None:
-        assert PerfCounter.CYCLES == "cycles"
-        assert PerfCounter.CYCLES.value == "cycles"
-
-    def test_instructions_value(self) -> None:
-        assert PerfCounter.INSTRUCTIONS == "instructions"
-
-    def test_cache_references_value(self) -> None:
-        assert PerfCounter.CACHE_REFERENCES == "cache-references"
-
-    def test_cache_misses_value(self) -> None:
-        assert PerfCounter.CACHE_MISSES == "cache-misses"
-
-    def test_l1_dcache_load_misses_value(self) -> None:
-        assert PerfCounter.L1_DCACHE_LOAD_MISSES == "L1-dcache-load-misses"
-
-    def test_llc_load_misses_value(self) -> None:
-        assert PerfCounter.LLC_LOAD_MISSES == "LLC-load-misses"
-
-    def test_branch_misses_value(self) -> None:
-        assert PerfCounter.BRANCH_MISSES == "branch-misses"
-
-    def test_member_count(self) -> None:
-        assert len(PerfCounter) == 7
-
-    def test_is_str(self) -> None:
-        """StrEnum members are strings."""
-        for member in PerfCounter:
-            assert isinstance(member, str)
-
 
 # ---------------------------------------------------------------------------
 # PerfCounters dataclass
@@ -91,22 +52,27 @@ class TestPerfCounters:
         pc = _sample_counters(cycles=4_000_000.0, instructions=1_000_000.0)
         assert pc.ipc == pytest.approx(0.25)
 
-    def test_to_dict_keys_match_perf_counter_values(self) -> None:
+    def test_to_dict_keys_match_field_names(self) -> None:
         pc = _sample_counters()
         d = pc.to_dict()
-        expected_keys = {c.value for c in PerfCounter}
-        assert set(d.keys()) == expected_keys
+        assert set(d.keys()) == PERF_COUNTER_FIELDS
 
     def test_to_dict_values(self) -> None:
         pc = _sample_counters()
         d = pc.to_dict()
         assert d["cycles"] == 1_000_000.0
         assert d["instructions"] == 2_000_000.0
-        assert d["cache-references"] == 50_000.0
-        assert d["cache-misses"] == 1_000.0
-        assert d["L1-dcache-load-misses"] == 500.0
-        assert d["LLC-load-misses"] == 100.0
-        assert d["branch-misses"] == 200.0
+        assert d["cache_references"] == 50_000.0
+        assert d["cache_misses"] == 1_000.0
+        assert d["l1_dcache_load_misses"] == 500.0
+        assert d["llc_load_misses"] == 100.0
+        assert d["branch_misses"] == 200.0
+
+    def test_to_dict_omits_none(self) -> None:
+        pc = PerfCounters(cycles=100.0, instructions=200.0)
+        d = pc.to_dict()
+        assert set(d.keys()) == {"cycles", "instructions"}
+        assert "llc_load_misses" not in d
 
     def test_frozen(self) -> None:
         pc = _sample_counters()
@@ -375,7 +341,7 @@ class TestPerfCSVLine:
 
 
 def _make_variance_stats(
-    counter: PerfCounter = PerfCounter.CYCLES,
+    counter: str = "cycles",
     cv: float = 0.03,
     threshold: float = 0.05,
 ) -> CounterVarianceStats:
@@ -410,11 +376,11 @@ class TestVarianceReport:
     def test_all_passed(self) -> None:
         report = VarianceReport(
             stats={
-                PerfCounter.CYCLES: _make_variance_stats(
-                    counter=PerfCounter.CYCLES, cv=0.02, threshold=0.05
+                "cycles": _make_variance_stats(
+                    counter="cycles", cv=0.02, threshold=0.05
                 ),
-                PerfCounter.CACHE_MISSES: _make_variance_stats(
-                    counter=PerfCounter.CACHE_MISSES, cv=0.05, threshold=0.10
+                "cache_misses": _make_variance_stats(
+                    counter="cache_misses", cv=0.05, threshold=0.10
                 ),
             }
         )
@@ -423,20 +389,20 @@ class TestVarianceReport:
 
     def test_some_failed(self) -> None:
         cycles_stats = _make_variance_stats(
-            counter=PerfCounter.CYCLES, cv=0.08, threshold=0.05
+            counter="cycles", cv=0.08, threshold=0.05
         )
         cache_stats = _make_variance_stats(
-            counter=PerfCounter.CACHE_MISSES, cv=0.03, threshold=0.10
+            counter="cache_misses", cv=0.03, threshold=0.10
         )
         report = VarianceReport(
             stats={
-                PerfCounter.CYCLES: cycles_stats,
-                PerfCounter.CACHE_MISSES: cache_stats,
+                "cycles": cycles_stats,
+                "cache_misses": cache_stats,
             }
         )
         assert report.all_passed is False
         assert len(report.failures) == 1
-        assert report.failures[0].counter == PerfCounter.CYCLES
+        assert report.failures[0].counter == "cycles"
 
     def test_empty_report(self) -> None:
         report = VarianceReport(stats={})

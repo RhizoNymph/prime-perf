@@ -7,7 +7,7 @@ import dataclasses
 import pytest
 
 from perf_optimize.config import SandboxConfig
-from perf_optimize.types import PerfCounter
+from perf_optimize.counters import HardwareProfile, detect_profile
 
 
 class TestSandboxConfigDefaults:
@@ -71,9 +71,10 @@ class TestSandboxConfigDefaults:
         assert "/lib" in cfg.ro_bind_paths
         assert "/lib64" in cfg.ro_bind_paths
 
-    def test_perf_counters_contains_all(self) -> None:
+    def test_hardware_profile_is_valid(self) -> None:
         cfg = SandboxConfig()
-        assert set(cfg.perf_counters) == set(PerfCounter)
+        assert isinstance(cfg.hardware_profile, HardwareProfile)
+        assert cfg.hardware_profile == detect_profile()
 
     def test_cv_threshold_cycles(self) -> None:
         cfg = SandboxConfig()

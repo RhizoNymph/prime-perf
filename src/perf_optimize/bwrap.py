@@ -103,7 +103,7 @@ def build_perf_command(
     Returns:
         A list of strings for ``perf stat -r N -x , -e <counters> -- <binary>``.
     """
-    counter_list = ",".join(c.value for c in config.perf_counters)
+    counter_list = ",".join(config.hardware_profile.perf_events())
     return [
         config.perf_path,
         "stat",

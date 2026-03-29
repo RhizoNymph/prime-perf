@@ -9,11 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from .types import PerfCounter
-
-
-def _default_perf_counters() -> tuple[PerfCounter, ...]:
-    return tuple(PerfCounter)
+from .counters import HardwareProfile, detect_profile
 
 
 def _default_ro_bind_paths() -> tuple[str, ...]:
@@ -22,6 +18,10 @@ def _default_ro_bind_paths() -> tuple[str, ...]:
 
 def _default_gcc_flags() -> tuple[str, ...]:
     return ("-O2", "-lm")
+
+
+def _default_hardware_profile() -> HardwareProfile:
+    return detect_profile()
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class SandboxConfig:
     ulimit_procs: int = 32
     ulimit_fsize_kb: int = 10_240
     ro_bind_paths: tuple[str, ...] = field(default_factory=_default_ro_bind_paths)
-    perf_counters: tuple[PerfCounter, ...] = field(default_factory=_default_perf_counters)
+    hardware_profile: HardwareProfile = field(default_factory=_default_hardware_profile)
     cv_threshold_cycles: float = 0.05
     cv_threshold_cache: float = 0.10
 

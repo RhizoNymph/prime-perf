@@ -10,30 +10,37 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-
-class PerfCounter(StrEnum):
-    """Hardware performance counter names as exact perf CLI event strings."""
-
-    CYCLES = "cycles"
-    INSTRUCTIONS = "instructions"
-    CACHE_REFERENCES = "cache-references"
-    CACHE_MISSES = "cache-misses"
-    L1_DCACHE_LOAD_MISSES = "L1-dcache-load-misses"
-    LLC_LOAD_MISSES = "LLC-load-misses"
-    BRANCH_MISSES = "branch-misses"
+# All PerfCounters field names that correspond to hardware counters.
+# Used by HardwareProfile and the parser to validate field mappings.
+PERF_COUNTER_FIELDS: frozenset[str] = frozenset({
+    "cycles",
+    "instructions",
+    "cache_references",
+    "cache_misses",
+    "l1_dcache_load_misses",
+    "llc_load_misses",
+    "branch_misses",
+})
 
 
 @dataclass(frozen=True, slots=True)
 class PerfCounters:
-    """Typed container for a full set of hardware performance counter readings."""
+    """Hardware performance counter readings.
+
+    ``None`` means the counter is not available on the current hardware.
+    ``0`` means it was measured and the count was zero.
+
+    ``cycles`` and ``instructions`` are always present on x86. Other fields
+    are populated based on the active ``HardwareProfile``.
+    """
 
     cycles: float
     instructions: float
-    cache_references: float
-    cache_misses: float
-    l1_dcache_load_misses: float
-    llc_load_misses: float
-    branch_misses: float
+    cache_references: float | None = None
+    cache_misses: float | None = None
+    l1_dcache_load_misses: float | None = None
+    llc_load_misses: float | None = None
+    branch_misses: float | None = None
 
     @property
     def ipc(self) -> float:
@@ -43,16 +50,13 @@ class PerfCounters:
         return self.instructions / self.cycles
 
     def to_dict(self) -> dict[str, float]:
-        """Serialize to a dict keyed by PerfCounter string values."""
-        return {
-            PerfCounter.CYCLES.value: self.cycles,
-            PerfCounter.INSTRUCTIONS.value: self.instructions,
-            PerfCounter.CACHE_REFERENCES.value: self.cache_references,
-            PerfCounter.CACHE_MISSES.value: self.cache_misses,
-            PerfCounter.L1_DCACHE_LOAD_MISSES.value: self.l1_dcache_load_misses,
-            PerfCounter.LLC_LOAD_MISSES.value: self.llc_load_misses,
-            PerfCounter.BRANCH_MISSES.value: self.branch_misses,
-        }
+        """Serialize to a dict keyed by field name, omitting None entries."""
+        result: dict[str, float] = {}
+        for field_name in PERF_COUNTER_FIELDS:
+            val = getattr(self, field_name)
+            if val is not None:
+                result[field_name] = val
+        return result
 
 
 class CompilationOutcome(StrEnum):
@@ -174,7 +178,7 @@ class PerfCSVLine:
 class CounterVarianceStats:
     """Variance statistics for a single performance counter across repeated measurements."""
 
-    counter: PerfCounter
+    counter: str
     mean: float
     std: float
     cv: float
@@ -193,7 +197,7 @@ class CounterVarianceStats:
 class VarianceReport:
     """Aggregated variance check across all performance counters."""
 
-    stats: dict[PerfCounter, CounterVarianceStats]
+    stats: dict[str, CounterVarianceStats]
 
     @property
     def all_passed(self) -> bool:

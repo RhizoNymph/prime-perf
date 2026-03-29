@@ -130,67 +130,58 @@ class TestSignalDetection:
         naive_samples = await self._collect_samples(sandbox, "matmul_naive.c", N_SIGNAL_SAMPLES)
         tiled_samples = await self._collect_samples(sandbox, "matmul_tiled.c", N_SIGNAL_SAMPLES)
 
-        # Compute reward using the design doc's formula
-        def compute_reward(ref: PerfCounters, agent: PerfCounters) -> float:
-            improvements = {
-                "cycles": (ref.cycles - agent.cycles) / ref.cycles if ref.cycles > 0 else 0,
-                "L1-dcache-load-misses": (
-                    (ref.l1_dcache_load_misses - agent.l1_dcache_load_misses)
-                    / ref.l1_dcache_load_misses
-                    if ref.l1_dcache_load_misses > 0
-                    else 0
-                ),
-                "LLC-load-misses": (
-                    (ref.llc_load_misses - agent.llc_load_misses) / ref.llc_load_misses
-                    if ref.llc_load_misses > 0
-                    else 0
-                ),
-                "branch-misses": (
-                    (ref.branch_misses - agent.branch_misses) / ref.branch_misses
-                    if ref.branch_misses > 0
-                    else 0
-                ),
-            }
-            reward = (
-                0.5 * improvements["cycles"]
-                + 0.2 * improvements["L1-dcache-load-misses"]
-                + 0.2 * improvements["LLC-load-misses"]
-                + 0.1 * improvements["branch-misses"]
-            )
-            return max(reward, 0.0)
+        # Compute reward using the design doc's formula, skipping None counters
+        # and redistributing weight among available counters.
+        def _improvement(ref_val: float | None, agent_val: float | None) -> float | None:
+            if ref_val is None or agent_val is None or ref_val <= 0:
+                return None
+            return (ref_val - agent_val) / ref_val
 
-        # Use medians as representative values (more robust than means)
+        def _median_field(samples: list[PerfCounters], field: str) -> float | None:
+            vals = [getattr(s, field) for s in samples]
+            if vals[0] is None:
+                return None
+            return float(np.median(vals))
+
         naive_med = PerfCounters(
             cycles=float(np.median([s.cycles for s in naive_samples])),
             instructions=float(np.median([s.instructions for s in naive_samples])),
-            cache_references=float(np.median([s.cache_references for s in naive_samples])),
-            cache_misses=float(np.median([s.cache_misses for s in naive_samples])),
-            l1_dcache_load_misses=float(
-                np.median([s.l1_dcache_load_misses for s in naive_samples])
-            ),
-            llc_load_misses=float(np.median([s.llc_load_misses for s in naive_samples])),
-            branch_misses=float(np.median([s.branch_misses for s in naive_samples])),
+            cache_misses=_median_field(naive_samples, "cache_misses"),
+            l1_dcache_load_misses=_median_field(naive_samples, "l1_dcache_load_misses"),
+            llc_load_misses=_median_field(naive_samples, "llc_load_misses"),
+            branch_misses=_median_field(naive_samples, "branch_misses"),
         )
         tiled_med = PerfCounters(
             cycles=float(np.median([s.cycles for s in tiled_samples])),
             instructions=float(np.median([s.instructions for s in tiled_samples])),
-            cache_references=float(np.median([s.cache_references for s in tiled_samples])),
-            cache_misses=float(np.median([s.cache_misses for s in tiled_samples])),
-            l1_dcache_load_misses=float(
-                np.median([s.l1_dcache_load_misses for s in tiled_samples])
-            ),
-            llc_load_misses=float(np.median([s.llc_load_misses for s in tiled_samples])),
-            branch_misses=float(np.median([s.branch_misses for s in tiled_samples])),
+            cache_misses=_median_field(tiled_samples, "cache_misses"),
+            l1_dcache_load_misses=_median_field(tiled_samples, "l1_dcache_load_misses"),
+            llc_load_misses=_median_field(tiled_samples, "llc_load_misses"),
+            branch_misses=_median_field(tiled_samples, "branch_misses"),
         )
 
-        reward = compute_reward(naive_med, tiled_med)
+        # Weighted improvement: skip None counters, normalize by available weight
+        weight_map = {
+            "cycles": 0.5,
+            "l1_dcache_load_misses": 0.2,
+            "llc_load_misses": 0.2,
+            "cache_misses": 0.2,  # AMD substitute for LLC
+            "branch_misses": 0.1,
+        }
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for field, weight in weight_map.items():
+            imp = _improvement(getattr(naive_med, field), getattr(tiled_med, field))
+            if imp is not None:
+                weighted_sum += weight * imp
+                total_weight += weight
+
+        reward = max(weighted_sum / total_weight, 0.0) if total_weight > 0 else 0.0
 
         print(f"\nReward for tiled vs naive: {reward:.4f}")
         print(f"Naive IPC: {naive_med.ipc:.2f}")
         print(f"Tiled IPC: {tiled_med.ipc:.2f}")
 
-        # Reward should be clearly positive - the tiled version is a
-        # known-good optimization that should produce meaningful improvement
         assert reward > 0.05, (
             f"Expected reward > 0.05 for tiled vs naive matmul, got {reward:.4f}"
         )

@@ -11,7 +11,7 @@ from perf_optimize.bwrap import (
     build_perf_command,
 )
 from perf_optimize.config import SandboxConfig
-from perf_optimize.types import PerfCounter
+from perf_optimize.counters import CounterMapping, HardwareProfile
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # build_bwrap_command
@@ -216,13 +216,13 @@ class TestBuildPerfCommand:
         x_idx = cmd.index("-x")
         assert cmd[x_idx + 1] == ","
 
-    def test_events_flag_contains_all_counters(self) -> None:
+    def test_events_flag_contains_all_profile_events(self) -> None:
         config = SandboxConfig()
         cmd = build_perf_command(config, "./solution")
         e_idx = cmd.index("-e")
         events_str = cmd[e_idx + 1]
-        for counter in PerfCounter:
-            assert counter.value in events_str, f"Missing counter: {counter.value}"
+        for event in config.hardware_profile.perf_events():
+            assert event in events_str, f"Missing event: {event}"
 
     def test_events_comma_separated(self) -> None:
         config = SandboxConfig()
@@ -230,7 +230,7 @@ class TestBuildPerfCommand:
         e_idx = cmd.index("-e")
         events_str = cmd[e_idx + 1]
         events = events_str.split(",")
-        assert len(events) == len(PerfCounter)
+        assert len(events) == len(config.hardware_profile.perf_events())
 
     def test_double_dash_separator(self) -> None:
         config = SandboxConfig()
@@ -255,9 +255,15 @@ class TestBuildPerfCommand:
         assert cmd[r_idx + 1] == "10"
 
     def test_subset_of_counters(self) -> None:
-        config = SandboxConfig(
-            perf_counters=(PerfCounter.CYCLES, PerfCounter.INSTRUCTIONS),
+        minimal_profile = HardwareProfile(
+            name="minimal",
+            vendor="TestVendor",
+            counters=(
+                CounterMapping("cycles", "cycles"),
+                CounterMapping("instructions", "instructions"),
+            ),
         )
+        config = SandboxConfig(hardware_profile=minimal_profile)
         cmd = build_perf_command(config, "./binary")
         e_idx = cmd.index("-e")
         events_str = cmd[e_idx + 1]

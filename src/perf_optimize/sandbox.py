@@ -345,7 +345,7 @@ class PerfSandbox:
             raise PerfMeasurementError("perf stat produced no output")
 
         # perf stat writes CSV to stderr
-        return parse_perf_output(stderr)
+        return parse_perf_output(stderr, self._config.hardware_profile)
 
     async def _run_subprocess(
         self,

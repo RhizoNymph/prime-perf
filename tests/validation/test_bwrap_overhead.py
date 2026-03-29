@@ -45,7 +45,7 @@ async def _measure_bare(
     input_path: Path,
 ) -> PerfCounters:
     """Run perf stat directly (no bwrap) for comparison."""
-    counter_list = ",".join(c.value for c in config.perf_counters)
+    counter_list = ",".join(config.hardware_profile.perf_events())
     cmd = [
         config.taskset_path,
         "-c",
@@ -76,7 +76,7 @@ async def _measure_bare(
     )
 
     stderr_str = stderr_raw.decode("utf-8", errors="replace")
-    return parse_perf_output(stderr_str)
+    return parse_perf_output(stderr_str, config.hardware_profile)
 
 
 @requires_all_tools

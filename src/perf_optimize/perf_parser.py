@@ -13,30 +13,35 @@ The variance field (when present) contains a percentage with a ``%`` suffix.
 
 from __future__ import annotations
 
-import structlog
+from typing import TYPE_CHECKING
 
-from perf_optimize.exceptions import CounterNotFoundError
-from perf_optimize.types import PerfCounter, PerfCounters, PerfCSVLine
+from perf_optimize.exceptions import (
+    CounterNotCountedError,
+    CounterNotFoundError,
+    CounterNotSupportedError,
+)
+from perf_optimize.types import PerfCounters, PerfCSVLine
 
-logger = structlog.get_logger(__name__)
+if TYPE_CHECKING:
+    from perf_optimize.counters import HardwareProfile
 
 
-def parse_csv_line(line: str) -> PerfCSVLine | None:
+def parse_csv_line(line: str) -> PerfCSVLine | str | None:
     """Parse a single line of ``perf stat -x ','`` CSV output.
 
-    Returns ``None`` for comment lines (starting with ``#``), empty lines,
-    derived-metric lines, ``<not supported>`` counters, and ``<not counted>``
-    counters (PMU scheduling failure).
+    Returns:
+        PerfCSVLine for successfully parsed counter lines.
+        A string tag (``"not_supported"`` or ``"not_counted"``) for error lines,
+        with the event name available from the line itself.
+        ``None`` for comment lines, empty lines, and derived metrics.
     """
     stripped = line.strip()
 
-    # Skip empty lines and comments
     if not stripped or stripped.startswith("#"):
         return None
 
     fields = stripped.split(",")
 
-    # Need at least 5 fields
     if len(fields) < 5:
         return None
 
@@ -44,18 +49,17 @@ def parse_csv_line(line: str) -> PerfCSVLine | None:
     unit = fields[1]
     event_name = fields[2]
 
-    # <not supported> means hardware doesn't have this counter -- skip gracefully
-    # <not counted> means the PMU couldn't schedule it (multiplexing) -- also skip
-    # Both are recoverable: the counter will be defaulted to 0 in parse_perf_output
-    if "<not supported>" in raw_value or "<not counted>" in raw_value:
-        return None
+    if "<not supported>" in raw_value:
+        return "not_supported"
+
+    if "<not counted>" in raw_value:
+        return "not_counted"
 
     # Skip derived metric lines (empty counter_value or empty event_name)
     if not raw_value or not event_name:
         return None
 
     # Skip textual derived metrics like "insn per cycle"
-    # Real event names contain only alphanumeric chars, hyphens, and underscores
     if " " in event_name:
         return None
 
@@ -63,40 +67,30 @@ def parse_csv_line(line: str) -> PerfCSVLine | None:
     try:
         counter_value = int(raw_value)
     except ValueError:
-        # Floating-point values indicate derived metrics; skip
         return None
 
-    # Detect whether the -r (repeat) flag was used by checking if field[3]
-    # ends with '%' (variance field). With -r the layout is:
-    #   value,unit,name,variance%,run_time,percentage,...
-    # Without -r:
-    #   value,unit,name,run_time,percentage,...
+    # Detect -r mode: field[3] ends with '%' (variance field)
     variance: float | None = None
     field3 = fields[3] if len(fields) > 3 else ""
 
     if field3.endswith("%"):
-        # -r mode: field[3] is variance, field[4] is run_time, field[5] is percentage
         try:
             variance = float(field3.rstrip("%"))
         except ValueError:
             variance = None
-
         try:
             run_time = int(fields[4]) if len(fields) > 4 and fields[4] else 0
         except ValueError:
             run_time = 0
-
         try:
             percentage = float(fields[5]) if len(fields) > 5 and fields[5] else 0.0
         except ValueError:
             percentage = 0.0
     else:
-        # No -r mode: field[3] is run_time, field[4] is percentage
         try:
             run_time = int(field3) if field3 else 0
         except ValueError:
             run_time = 0
-
         try:
             percentage = float(fields[4]) if len(fields) > 4 and fields[4] else 0.0
         except ValueError:
@@ -112,66 +106,67 @@ def parse_csv_line(line: str) -> PerfCSVLine | None:
     )
 
 
-# Mapping from PerfCounter enum value (the perf event name string)
-# to the attribute name on PerfCounters.
-_COUNTER_TO_ATTR: dict[str, str] = {
-    PerfCounter.CYCLES.value: "cycles",
-    PerfCounter.INSTRUCTIONS.value: "instructions",
-    PerfCounter.CACHE_REFERENCES.value: "cache_references",
-    PerfCounter.CACHE_MISSES.value: "cache_misses",
-    PerfCounter.L1_DCACHE_LOAD_MISSES.value: "l1_dcache_load_misses",
-    PerfCounter.LLC_LOAD_MISSES.value: "llc_load_misses",
-    PerfCounter.BRANCH_MISSES.value: "branch_misses",
-}
-
-# Set of all valid event name strings for quick lookup
-_VALID_EVENT_NAMES: set[str] = {c.value for c in PerfCounter}
+def _extract_event_name(line: str) -> str:
+    """Extract the event name (field[2]) from a CSV line."""
+    fields = line.strip().split(",")
+    if len(fields) >= 3 and fields[2]:
+        return fields[2]
+    return "<unknown>"
 
 
-def parse_perf_output(csv_text: str) -> PerfCounters:
+def parse_perf_output(csv_text: str, profile: HardwareProfile) -> PerfCounters:
     """Parse the full stderr output from ``perf stat -x ','``.
 
-    Splits by newlines, parses each line via :func:`parse_csv_line`,
-    collects results, and assembles a :class:`PerfCounters` dataclass.
-
-    Counters that are ``<not supported>`` or ``<not counted>`` are set to 0.
-    At least ``cycles`` and ``instructions`` must be present.
+    Uses the ``HardwareProfile`` to map hardware event names to PerfCounters
+    field names. Only fields mapped by the profile are populated; unmapped
+    fields remain ``None``.
 
     Raises:
-        CounterNotFoundError: If ``cycles`` or ``instructions`` is missing.
+        CounterNotSupportedError: If a profiled event reports ``<not supported>``.
+            This means the profile is wrong for this hardware.
+        CounterNotCountedError: If a profiled event reports ``<not counted>``.
+            This is a PMU scheduling failure.
+        CounterNotFoundError: If ``cycles`` or ``instructions`` is missing
+            from the output.
     """
-    collected: dict[str, int] = {}
+    event_to_fields = profile.event_to_fields()
+    expected_events = set(profile.perf_events())
+    collected: dict[str, float] = {}
 
     for line in csv_text.splitlines():
-        parsed = parse_csv_line(line)
-        if parsed is None:
+        result = parse_csv_line(line)
+
+        if result is None:
             continue
 
-        # Only collect lines whose event_name matches a known PerfCounter
-        if parsed.event_name in _VALID_EVENT_NAMES:
-            attr_name = _COUNTER_TO_ATTR[parsed.event_name]
-            collected[attr_name] = parsed.counter_value
+        if result == "not_supported":
+            event = _extract_event_name(line)
+            if event in expected_events:
+                raise CounterNotSupportedError(event)
+            continue
 
-    # cycles and instructions are mandatory -- everything else defaults to 0
-    # if not supported by the hardware
-    for required in (PerfCounter.CYCLES, PerfCounter.INSTRUCTIONS):
-        attr_name = _COUNTER_TO_ATTR[required.value]
-        if attr_name not in collected:
-            raise CounterNotFoundError(required.value)
+        if result == "not_counted":
+            event = _extract_event_name(line)
+            if event in expected_events:
+                raise CounterNotCountedError(counter=event)
+            continue
 
-    # Fill in unsupported counters with 0
-    for counter in PerfCounter:
-        attr_name = _COUNTER_TO_ATTR[counter.value]
-        if attr_name not in collected:
-            logger.info("counter_not_supported", counter=counter.value)
-            collected[attr_name] = 0
+        # It's a PerfCSVLine
+        if result.event_name in event_to_fields:
+            for field_name in event_to_fields[result.event_name]:
+                collected[field_name] = result.counter_value
+
+    # Mandatory counters
+    for required in ("cycles", "instructions"):
+        if required not in collected:
+            raise CounterNotFoundError(required)
 
     return PerfCounters(
         cycles=collected["cycles"],
         instructions=collected["instructions"],
-        cache_references=collected["cache_references"],
-        cache_misses=collected["cache_misses"],
-        l1_dcache_load_misses=collected["l1_dcache_load_misses"],
-        llc_load_misses=collected["llc_load_misses"],
-        branch_misses=collected["branch_misses"],
+        cache_references=collected.get("cache_references"),
+        cache_misses=collected.get("cache_misses"),
+        l1_dcache_load_misses=collected.get("l1_dcache_load_misses"),
+        llc_load_misses=collected.get("llc_load_misses"),
+        branch_misses=collected.get("branch_misses"),
     )
