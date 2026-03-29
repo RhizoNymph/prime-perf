@@ -15,14 +15,19 @@ Orchestrates code execution inside bubblewrap (bwrap) containers. Handles compil
 (gcc), correctness testing, and performance measurement (perf stat). All operations
 are async via `asyncio.create_subprocess_exec`.
 
+### Hardware Profiles (`src/perf_optimize/counters.py`)
+Maps logical counter fields (e.g. `llc_load_misses`) to architecture-specific perf
+events (e.g. `LLC-load-misses` on Intel, not available on AMD). Auto-detects CPU
+vendor. AMD uses 5 events to avoid PMU multiplexing; Intel uses 7.
+
 ### Perf Parser (`src/perf_optimize/perf_parser.py`)
-Pure-function parser for `perf stat -x ','` CSV output. Converts raw text into typed
-`PerfCounters` dataclass. Handles edge cases: `<not counted>`, `<not supported>`,
-derived metric lines, variable column counts.
+Pure-function parser for `perf stat -x ','` CSV output. Takes a `HardwareProfile`
+to map hardware event names back to `PerfCounters` fields. Raises on `<not counted>`
+(PMU failure) and `<not supported>` (wrong profile).
 
 ### Command Builder (`src/perf_optimize/bwrap.py`)
 Pure functions that construct command-line argument lists for bwrap, gcc, and perf stat.
-Configurable via `SandboxConfig`. Produces lists suitable for `asyncio.create_subprocess_exec`.
+Uses the hardware profile to select which events to request.
 
 ### Type System (`src/perf_optimize/types.py`)
 Immutable dataclasses for the measurement pipeline: `PerfCounters`, `ExecutionResult`,
@@ -83,8 +88,14 @@ Source Code (str)
 - depends_on: [config]
 - doc: docs/features/bwrap_builder.md
 
+### hardware_profiles
+- description: Architecture-aware counter profiles for AMD and Intel
+- entry_points: [HardwareProfile, AMD_ZEN, INTEL_CORE, detect_profile]
+- depends_on: []
+- doc: docs/features/hardware_profiles.md
+
 ### type_system
-- description: Immutable dataclasses and enums for the measurement pipeline
+- description: Immutable dataclasses for the measurement pipeline
 - entry_points: [PerfCounters, ExecutionResult, CompilationResult, TestReport]
 - depends_on: []
 - doc: docs/features/type_system.md
@@ -92,7 +103,7 @@ Source Code (str)
 ### config
 - description: Sandbox configuration with env var overrides
 - entry_points: [SandboxConfig, SandboxConfig.from_env]
-- depends_on: [type_system]
+- depends_on: [type_system, hardware_profiles]
 - doc: docs/features/config.md
 
 ### variance_validation
