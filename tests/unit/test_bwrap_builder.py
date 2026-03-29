@@ -152,35 +152,36 @@ class TestBuildBwrapCommand:
 
 
 class TestBuildCompileCommand:
-    """Tests for GCC compile command builder."""
+    """Tests for compile command builder (language-aware)."""
 
-    def test_default_config(self) -> None:
-        config = SandboxConfig()
+    def test_c_default_config(self) -> None:
+        config = SandboxConfig()  # default language is C
         cmd = build_compile_command(config, "solution.c", "solution")
         assert cmd == ["gcc", "-O2", "-lm", "-o", "solution", "solution.c"]
 
-    def test_custom_gcc_path(self) -> None:
-        config = SandboxConfig(gcc_path="/usr/bin/gcc-13")
-        cmd = build_compile_command(config, "test.c", "test")
-        assert cmd[0] == "/usr/bin/gcc-13"
+    def test_rust_config(self) -> None:
+        from perf_optimize.languages import Language, resolve_language_config
 
-    def test_custom_flags(self) -> None:
-        config = SandboxConfig(gcc_flags=("-O3", "-march=native", "-lm"))
-        cmd = build_compile_command(config, "src.c", "out")
-        assert cmd == [
-            "gcc",
-            "-O3",
-            "-march=native",
-            "-lm",
-            "-o",
-            "out",
-            "src.c",
-        ]
+        config = SandboxConfig(language=resolve_language_config(Language.RUST))
+        cmd = build_compile_command(config, "solution.rs", "solution")
+        assert cmd[0] == "rustc"
+        assert "-O" in cmd
+        assert cmd[-1] == "solution.rs"
+
+    def test_python_syntax_check(self) -> None:
+        from perf_optimize.languages import Language, resolve_language_config
+
+        config = SandboxConfig(language=resolve_language_config(Language.PYTHON))
+        cmd = build_compile_command(config, "solution.py", "solution.py")
+        assert cmd[0] == "python3"
+        assert "-m" in cmd
+        assert "py_compile" in cmd
+        assert cmd[-1] == "solution.py"
+        assert "-o" not in cmd  # interpreted: no output binary
 
     def test_output_file_placement(self) -> None:
         config = SandboxConfig()
         cmd = build_compile_command(config, "input.c", "output_bin")
-        # -o should come right before the output file
         o_idx = cmd.index("-o")
         assert cmd[o_idx + 1] == "output_bin"
 

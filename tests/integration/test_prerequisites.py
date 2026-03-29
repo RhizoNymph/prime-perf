@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from perf_optimize.config import SandboxConfig
 from perf_optimize.exceptions import (
     BwrapNotFoundError,
-    GccNotFoundError,
     PerfNotFoundError,
+    PrerequisiteError,
     TasksetNotFoundError,
 )
 from perf_optimize.sandbox import PerfSandbox
@@ -33,10 +35,12 @@ async def test_bwrap_not_found_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gcc_not_found_raises() -> None:
-    config = SandboxConfig(gcc_path="/nonexistent/gcc")
+async def test_compiler_not_found_raises() -> None:
+    """Language compiler not on PATH raises PrerequisiteError."""
+    lang_with_bad_compiler = replace(SandboxConfig().language, compiler_path="/nonexistent/gcc")
+    config = SandboxConfig(language=lang_with_bad_compiler)
     sandbox = PerfSandbox(config)
-    with pytest.raises(GccNotFoundError):
+    with pytest.raises(PrerequisiteError):
         await sandbox.check_prerequisites()
 
 

@@ -1,4 +1,6 @@
-"""PerfSandbox: async orchestrator for compiling, testing, and measuring C code.
+"""PerfSandbox: async orchestrator for compiling, testing, and measuring code.
+
+Supports C, Rust, Python, and TypeScript via LanguageConfig.
 
 All code execution happens inside a bubblewrap sandbox with:
 - Filesystem namespace isolation (ro system libs, rw workdir only)
@@ -18,14 +20,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from .bwrap import build_bwrap_command, build_compile_command, build_perf_command
+from .bwrap import build_bwrap_command, build_compile_command, build_perf_command, build_run_command
 from .exceptions import (
     BwrapInvocationError,
     BwrapNotFoundError,
-    GccNotFoundError,
     PerfMeasurementError,
     PerfNotFoundError,
     PerfParanoidError,
+    PrerequisiteError,
     TasksetNotFoundError,
 )
 from .perf_parser import parse_perf_output
@@ -49,13 +51,14 @@ _PARANOID_PATH = Path("/proc/sys/kernel/perf_event_paranoid")
 
 
 class PerfSandbox:
-    """Async orchestrator for compiling, testing, and measuring C programs.
+    """Async orchestrator for compiling, testing, and measuring programs.
 
-    All subprocess calls use asyncio.create_subprocess_exec. Each invocation
-    creates its own temporary directory for isolation.
+    Supports multiple languages via LanguageConfig. All subprocess calls use
+    asyncio.create_subprocess_exec. Each invocation creates its own temporary
+    directory for isolation.
 
     Args:
-        config: Sandbox configuration (paths, timeouts, limits).
+        config: Sandbox configuration (paths, timeouts, limits, language).
     """
 
     def __init__(self, config: SandboxConfig) -> None:
@@ -64,21 +67,31 @@ class PerfSandbox:
     async def check_prerequisites(self) -> None:
         """Verify all required system tools and capabilities are available.
 
+        Checks bwrap, perf, taskset, and the language-specific compiler/runtime.
+
         Raises:
             BwrapNotFoundError: bwrap not on PATH.
-            GccNotFoundError: gcc not on PATH.
+            PrerequisiteError: Language compiler/runtime not on PATH.
             PerfNotFoundError: perf not on PATH.
             TasksetNotFoundError: taskset not on PATH.
             PerfParanoidError: perf_event_paranoid > 1.
         """
         if shutil.which(self._config.bwrap_path) is None:
             raise BwrapNotFoundError()
-        if shutil.which(self._config.gcc_path) is None:
-            raise GccNotFoundError()
         if shutil.which(self._config.perf_path) is None:
             raise PerfNotFoundError()
         if shutil.which(self._config.taskset_path) is None:
             raise TasksetNotFoundError()
+
+        lang = self._config.language
+        if lang.compiler_path and shutil.which(lang.compiler_path) is None:
+            raise PrerequisiteError(
+                f"{lang.language.value} compiler '{lang.compiler_path}' not found"
+            )
+        if lang.runtime_path and shutil.which(lang.runtime_path) is None:
+            raise PrerequisiteError(
+                f"{lang.language.value} runtime '{lang.runtime_path}' not found"
+            )
 
         if _PARANOID_PATH.exists():
             paranoid = int(_PARANOID_PATH.read_text().strip())
@@ -97,7 +110,7 @@ class PerfSandbox:
         """Full pipeline: compile, test, measure.
 
         Args:
-            source_code: C source code as a string.
+            source_code: Source code as a string (language determined by config).
             test_inputs: Binary input for each test case (fed to stdin).
             expected_outputs: Expected binary output for each test case.
             perf_input: Binary input for the performance measurement run.
@@ -151,8 +164,9 @@ class PerfSandbox:
         """
         work_dir = tempfile.mkdtemp(prefix="perf_opt_compile_")
         work = Path(work_dir)
+        lang = self._config.language
 
-        source_file = work / "solution.c"
+        source_file = work / f"solution{lang.file_extension}"
         source_file.write_text(source_code)
 
         result = await self._compile(work_dir)
@@ -170,9 +184,10 @@ class PerfSandbox:
         work_dir: str,
     ) -> ExecutionResult:
         work = Path(work_dir)
+        lang = self._config.language
 
-        # Write source
-        source_file = work / "solution.c"
+        # Write source with correct extension
+        source_file = work / f"solution{lang.file_extension}"
         source_file.write_text(source_code)
 
         # Write perf input
@@ -220,11 +235,12 @@ class PerfSandbox:
         )
 
     async def _compile(self, work_dir: str) -> CompilationResult:
-        """Compile solution.c inside the bwrap sandbox."""
+        """Compile or syntax-check the solution inside the bwrap sandbox."""
+        lang = self._config.language
         compile_cmd = build_compile_command(
             self._config,
-            source_file="/work/solution.c",
-            output_file="/work/solution",
+            source_file=f"/work/solution{lang.file_extension}",
+            output_file=f"/work/{lang.output_file}",
         )
         bwrap_cmd = build_bwrap_command(self._config, work_dir, compile_cmd)
 
@@ -280,7 +296,7 @@ class PerfSandbox:
         expected: bytes,
     ) -> TestResult:
         """Run one test case: feed input, compare output to expected."""
-        inner_cmd = ["/work/solution"]
+        inner_cmd = build_run_command(self._config)
         bwrap_cmd = build_bwrap_command(self._config, work_dir, inner_cmd)
 
         returncode, stdout_bytes, stderr = await self._run_subprocess(
@@ -317,8 +333,8 @@ class PerfSandbox:
         return TestResult(name=name, passed=True)
 
     async def _run_perf(self, work_dir: str) -> PerfCounters:
-        """Run perf stat on /work/solution with perf_input.bin as stdin."""
-        perf_cmd = build_perf_command(self._config, binary_path="/work/solution")
+        """Run perf stat on the solution with perf_input.bin as stdin."""
+        perf_cmd = build_perf_command(self._config)
         bwrap_cmd = build_bwrap_command(self._config, work_dir, perf_cmd)
 
         # Read perf input from the work directory

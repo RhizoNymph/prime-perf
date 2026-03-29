@@ -8,18 +8,17 @@ import pytest
 
 from perf_optimize.config import SandboxConfig
 from perf_optimize.counters import HardwareProfile, detect_profile
+from perf_optimize.languages import Language
 
 
 class TestSandboxConfigDefaults:
     """Default config has sensible values and covers all fields."""
 
-    def test_gcc_path(self) -> None:
+    def test_default_language_is_c(self) -> None:
         cfg = SandboxConfig()
-        assert cfg.gcc_path == "gcc"
-
-    def test_gcc_flags(self) -> None:
-        cfg = SandboxConfig()
-        assert cfg.gcc_flags == ("-O2", "-lm")
+        assert cfg.language.language == Language.C
+        assert cfg.language.file_extension == ".c"
+        assert cfg.language.compiled is True
 
     def test_bwrap_path(self) -> None:
         cfg = SandboxConfig()
@@ -131,10 +130,15 @@ class TestSandboxConfigFromEnv:
         cfg = SandboxConfig.from_env()
         assert cfg.perf_repeat == 10
 
-    def test_override_gcc_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PERF_OPT_GCC_PATH", "/usr/local/bin/gcc-13")
-        cfg = SandboxConfig.from_env()
-        assert cfg.gcc_path == "/usr/local/bin/gcc-13"
+    def test_from_env_with_rust_language(self) -> None:
+        cfg = SandboxConfig.from_env(language=Language.RUST)
+        assert cfg.language.language == Language.RUST
+        assert cfg.language.compiled is True
+
+    def test_from_env_with_python_language(self) -> None:
+        cfg = SandboxConfig.from_env(language=Language.PYTHON)
+        assert cfg.language.language == Language.PYTHON
+        assert cfg.language.compiled is False
 
     def test_override_bwrap_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PERF_OPT_BWRAP_PATH", "/custom/bwrap")
@@ -176,20 +180,12 @@ class TestSandboxConfigFromEnv:
         cfg = SandboxConfig.from_env()
         assert cfg.cv_threshold_cache == pytest.approx(0.15)
 
-    def test_override_gcc_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PERF_OPT_GCC_FLAGS", "-O3,-Wall,-lm")
-        cfg = SandboxConfig.from_env()
-        assert cfg.gcc_flags == ("-O3", "-Wall", "-lm")
-
     def test_multiple_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PERF_OPT_PIN_CPU", "2")
         monkeypatch.setenv("PERF_OPT_PERF_REPEAT", "3")
-        monkeypatch.setenv("PERF_OPT_GCC_PATH", "/opt/gcc")
         cfg = SandboxConfig.from_env()
         assert cfg.pin_cpu == 2
         assert cfg.perf_repeat == 3
-        assert cfg.gcc_path == "/opt/gcc"
-        # Other fields remain default
         assert cfg.bwrap_path == "bwrap"
         assert cfg.compile_timeout_s == 30.0
 
@@ -198,6 +194,5 @@ class TestSandboxConfigFromEnv:
         monkeypatch.setenv("PERF_OPT_PIN_CPU", "7")
         cfg = SandboxConfig.from_env()
         assert cfg.pin_cpu == 7
-        assert cfg.gcc_path == "gcc"
         assert cfg.perf_repeat == 5
         assert cfg.compile_timeout_s == 30.0
