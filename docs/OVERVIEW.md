@@ -132,3 +132,9 @@ Source Code (str)
 - entry_points: [tests/validation/test_variance.py, tests/validation/test_bwrap_overhead.py, tests/validation/test_signal_detection.py]
 - depends_on: [sandbox]
 - doc: docs/features/variance_validation.md
+
+### problem_bank
+- description: Collection of performance optimization problems with multi-language reference solutions, test generation, and binary I/O
+- entry_points: [problems/*/spec.md, problems/*/reference/solution.{c,rs,py,ts}, scripts/generate_*_tests.py]
+- depends_on: [sandbox, languages]
+- doc: docs/features/problem_bank.md
