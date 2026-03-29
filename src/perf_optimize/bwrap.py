@@ -63,15 +63,16 @@ def build_bwrap_command(
     # Separator between bwrap args and the inner command
     cmd.append("--")
 
-    # Ulimit wrapper via sh -c, then exec into the real command.
-    # The '_' is the $0 placeholder for sh; "$@" expands to inner_command.
+    # Ulimit wrapper via bash -c, then exec into the real command.
+    # We use bash (not sh/dash) because dash lacks ulimit -u support.
+    # The '_' is the $0 placeholder for bash; "$@" expands to inner_command.
     ulimit_script = (
         f"ulimit -v {config.ulimit_mem_kb}"
         f" && ulimit -u {config.ulimit_procs}"
         f" && ulimit -f {config.ulimit_fsize_kb}"
         ' && exec "$@"'
     )
-    cmd.extend(["sh", "-c", ulimit_script, "_"])
+    cmd.extend(["/usr/bin/bash", "-c", ulimit_script, "_"])
 
     # The actual command to run inside the sandbox
     cmd.extend(inner_command)

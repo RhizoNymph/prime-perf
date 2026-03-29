@@ -84,11 +84,11 @@ class TestBuildBwrapCommand:
         cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)
         assert "--" in cmd
 
-    def test_ulimit_values_in_sh_script(self) -> None:
+    def test_ulimit_values_in_bash_script(self) -> None:
         cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)
         separator_idx = cmd.index("--")
-        # After -- comes: sh -c '<script>' _ <inner_cmd...>
-        assert cmd[separator_idx + 1] == "sh"
+        # After -- comes: /usr/bin/bash -c '<script>' _ <inner_cmd...>
+        assert cmd[separator_idx + 1] == "/usr/bin/bash"
         assert cmd[separator_idx + 2] == "-c"
         script = cmd[separator_idx + 3]
         assert f"ulimit -v {self.config.ulimit_mem_kb}" in script
