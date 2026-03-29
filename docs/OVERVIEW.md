@@ -29,6 +29,9 @@ Immutable dataclasses for the measurement pipeline: `PerfCounters`, `ExecutionRe
 `CompilationResult` (discriminated union), `TestReport`, `VarianceReport`. Designed so
 invalid states are unrepresentable.
 
+### Exception Hierarchy (`src/perf_optimize/exceptions.py`)
+Structured domain exceptions for prerequisites, sandbox execution, and perf output parsing.
+
 ### Configuration (`src/perf_optimize/config.py`)
 `SandboxConfig` frozen dataclass with `PERF_OPT_*` env var overrides. Controls tool
 paths, timeouts, resource limits, CPU pinning, perf counter selection, and variance
@@ -88,6 +91,12 @@ Source Code (str)
 - entry_points: [PerfCounters, ExecutionResult, CompilationResult, TestReport]
 - depends_on: []
 - doc: docs/features/type_system.md
+
+### exception_hierarchy
+- description: Structured domain exception classes
+- entry_points: [src/perf_optimize/exceptions.py]
+- depends_on: []
+- doc: docs/features/exception_hierarchy.md
 
 ### config
 - description: Sandbox configuration with env var overrides
