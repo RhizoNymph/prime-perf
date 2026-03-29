@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from .bwrap import build_bwrap_command, build_compile_command, build_perf_command, build_run_command
+from .comparison import ComparisonMode, compare_outputs
 from .exceptions import (
     BwrapInvocationError,
     BwrapNotFoundError,
@@ -106,6 +107,8 @@ class PerfSandbox:
         perf_input: bytes,
         *,
         test_names: list[str] | None = None,
+        comparison: ComparisonMode = ComparisonMode.EXACT,
+        tolerance: float | None = None,
     ) -> ExecutionResult:
         """Full pipeline: compile, test, measure.
 
@@ -115,6 +118,8 @@ class PerfSandbox:
             expected_outputs: Expected binary output for each test case.
             perf_input: Binary input for the performance measurement run.
             test_names: Optional names for each test case.
+            comparison: How to compare outputs (exact or tolerance-based).
+            tolerance: Relative tolerance for float comparison.
 
         Returns:
             ExecutionResult with compilation, test, and perf counter data.
@@ -125,7 +130,8 @@ class PerfSandbox:
         work_dir = tempfile.mkdtemp(prefix="perf_opt_")
         try:
             return await self._run_pipeline(
-                source_code, test_inputs, expected_outputs, perf_input, test_names, work_dir
+                source_code, test_inputs, expected_outputs, perf_input, test_names,
+                work_dir, comparison, tolerance,
             )
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -182,6 +188,8 @@ class PerfSandbox:
         perf_input: bytes,
         test_names: list[str],
         work_dir: str,
+        comparison: ComparisonMode = ComparisonMode.EXACT,
+        tolerance: float | None = None,
     ) -> ExecutionResult:
         work = Path(work_dir)
         lang = self._config.language
@@ -205,7 +213,9 @@ class PerfSandbox:
             )
 
         # Step 2: Run tests
-        test_report = await self._run_tests(work_dir, test_inputs, expected_outputs, test_names)
+        test_report = await self._run_tests(
+            work_dir, test_inputs, expected_outputs, test_names, comparison, tolerance
+        )
         if not test_report.all_passed:
             logger.info(
                 "tests_failed",
@@ -269,6 +279,8 @@ class PerfSandbox:
         test_inputs: list[bytes],
         expected_outputs: list[bytes],
         test_names: list[str],
+        comparison: ComparisonMode = ComparisonMode.EXACT,
+        tolerance: float | None = None,
     ) -> TestReport:
         """Run correctness tests sequentially inside bwrap."""
         results: list[TestResult] = []
@@ -277,7 +289,9 @@ class PerfSandbox:
             test_names, test_inputs, expected_outputs, strict=True
         ):
             try:
-                result = await self._run_single_test(work_dir, name, input_data, expected)
+                result = await self._run_single_test(
+                    work_dir, name, input_data, expected, comparison, tolerance
+                )
             except TimeoutError:
                 result = TestResult(
                     name=name,
@@ -294,6 +308,8 @@ class PerfSandbox:
         name: str,
         input_data: bytes,
         expected: bytes,
+        comparison: ComparisonMode = ComparisonMode.EXACT,
+        tolerance: float | None = None,
     ) -> TestResult:
         """Run one test case: feed input, compare output to expected."""
         inner_cmd = build_run_command(self._config)
@@ -320,15 +336,9 @@ class PerfSandbox:
         if not stdout_bytes:
             return TestResult(name=name, passed=False, error="No output produced")
 
-        if stdout_bytes != expected:
-            return TestResult(
-                name=name,
-                passed=False,
-                error=(
-                    f"Output mismatch: got {len(stdout_bytes)} bytes, "
-                    f"expected {len(expected)} bytes"
-                ),
-            )
+        mismatch = compare_outputs(stdout_bytes, expected, comparison, tolerance)
+        if mismatch is not None:
+            return TestResult(name=name, passed=False, error=mismatch)
 
         return TestResult(name=name, passed=True)
 
