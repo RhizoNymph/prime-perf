@@ -2,41 +2,110 @@
 
 ## Description
 
-An RL environment that teaches LLMs to optimize C code for hardware performance. Code runs inside a bubblewrap sandbox with measurements from Linux `perf stat` hardware performance counters. Reward is derived from improvements in cycles, cache misses, and branch mispredictions relative to a naive reference solution.
+An RL environment that teaches LLMs to optimize C code for hardware performance.
+The agent receives a naive reference solution and iteratively rewrites it, getting
+structured feedback from Linux `perf` hardware performance counters. Reward is derived
+from counter improvements (cycles, cache misses, branch mispredictions), gated behind
+correctness verification.
 
 ## Subsystems
 
-- **Types & Config** (`src/perf_optimize/types.py`, `config.py`, `exceptions.py`): Core data types, enums, configuration dataclasses, and structured exception hierarchy.
-- **Perf Parser** (`src/perf_optimize/perf_parser.py`): Pure-function parser for `perf stat -x ','` CSV output. Converts raw text into structured `PerfCounters`.
-- **Bwrap Builder** (`src/perf_optimize/bwrap.py`): Pure-function command-line builders for taskset+bwrap sandbox invocation, GCC compilation, and perf measurement.
-- **PerfSandbox** (planned): Async orchestrator that ties compilation, testing, and measurement together inside bubblewrap.
-- **Environment** (planned): `MultiTurnEnv` subclass for the verifiers SDK, managing episodes and reward computation.
+### Sandbox (`src/perf_optimize/sandbox.py`)
+Orchestrates code execution inside bubblewrap (bwrap) containers. Handles compilation
+(gcc), correctness testing, and performance measurement (perf stat). All operations
+are async via `asyncio.create_subprocess_exec`.
+
+### Perf Parser (`src/perf_optimize/perf_parser.py`)
+Pure-function parser for `perf stat -x ','` CSV output. Converts raw text into typed
+`PerfCounters` dataclass. Handles edge cases: `<not counted>`, `<not supported>`,
+derived metric lines, variable column counts.
+
+### Command Builder (`src/perf_optimize/bwrap.py`)
+Pure functions that construct command-line argument lists for bwrap, gcc, and perf stat.
+Configurable via `SandboxConfig`. Produces lists suitable for `asyncio.create_subprocess_exec`.
+
+### Type System (`src/perf_optimize/types.py`)
+Immutable dataclasses for the measurement pipeline: `PerfCounters`, `ExecutionResult`,
+`CompilationResult` (discriminated union), `TestReport`, `VarianceReport`. Designed so
+invalid states are unrepresentable.
+
+### Exception Hierarchy (`src/perf_optimize/exceptions.py`)
+Structured domain exceptions for prerequisites, sandbox execution, and perf output parsing.
+
+### Configuration (`src/perf_optimize/config.py`)
+`SandboxConfig` frozen dataclass with `PERF_OPT_*` env var overrides. Controls tool
+paths, timeouts, resource limits, CPU pinning, perf counter selection, and variance
+thresholds.
 
 ## Data Flow
 
-1. Agent submits C source code.
-2. **Bwrap Builder** constructs compile command -> **PerfSandbox** runs it inside bwrap.
-3. If compilation succeeds, bwrap builder constructs test commands -> sandbox runs correctness tests.
-4. If tests pass, bwrap builder constructs perf command -> sandbox runs `perf stat`.
-5. **Perf Parser** converts perf's CSV stderr output into `PerfCounters`.
-6. Environment computes reward from counter improvements vs reference.
+```
+Source Code (str)
+       │
+       ▼
+   PerfSandbox.compile_and_run()
+       │
+       ├─ _compile() ──► bwrap + gcc ──► CompilationResult
+       │                                    │
+       │   ┌────────────────────────────────┘
+       │   │ (if success)
+       │   ▼
+       ├─ _run_tests() ──► bwrap + ./solution ──► TestReport
+       │                                            │
+       │   ┌────────────────────────────────────────┘
+       │   │ (if all pass)
+       │   ▼
+       └─ _run_perf() ──► bwrap + perf stat ──► stderr CSV
+                                                    │
+                                              parse_perf_output()
+                                                    │
+                                                    ▼
+                                              PerfCounters
+                                                    │
+                                                    ▼
+                                            ExecutionResult
+```
 
 ## Features Index
 
+### sandbox
+- description: Bubblewrap-sandboxed code compilation, testing, and perf measurement
+- entry_points: [PerfSandbox.compile_and_run, PerfSandbox.measure_only, PerfSandbox.check_prerequisites]
+- depends_on: [perf_parser, bwrap_builder, config]
+- doc: docs/features/sandbox.md
+
 ### perf_parser
-- description: Parses `perf stat -x ','` CSV output into structured counter data.
-- entry_points: [`parse_csv_line`, `parse_perf_output`]
-- depends_on: [types, exceptions]
+- description: Parse perf stat CSV output into typed PerfCounters
+- entry_points: [parse_perf_output, parse_csv_line]
+- depends_on: [type_system]
 - doc: docs/features/perf_parser.md
 
 ### bwrap_builder
-- description: Builds command-line argument lists for bwrap sandbox, GCC, and perf stat.
-- entry_points: [`build_bwrap_command`, `build_compile_command`, `build_perf_command`]
-- depends_on: [config, types]
+- description: Construct bwrap, gcc, and perf stat command lines
+- entry_points: [build_bwrap_command, build_compile_command, build_perf_command]
+- depends_on: [config]
 - doc: docs/features/bwrap_builder.md
 
-### types_and_config
-- description: Core data types (PerfCounter enum, PerfCSVLine, PerfCounters), configuration (SandboxConfig), and exception hierarchy.
-- entry_points: [PerfCounter, PerfCSVLine, PerfCounters, SandboxConfig]
+### type_system
+- description: Immutable dataclasses and enums for the measurement pipeline
+- entry_points: [PerfCounters, ExecutionResult, CompilationResult, TestReport]
 - depends_on: []
-- doc: docs/features/types_and_config.md
+- doc: docs/features/type_system.md
+
+### exception_hierarchy
+- description: Structured domain exception classes
+- entry_points: [src/perf_optimize/exceptions.py]
+- depends_on: []
+- doc: docs/features/exception_hierarchy.md
+
+### config
+- description: Sandbox configuration with env var overrides
+- entry_points: [SandboxConfig, SandboxConfig.from_env]
+- depends_on: [type_system]
+- doc: docs/features/config.md
+
+### variance_validation
+- description: Statistical tests proving measurement pipeline stability
+- entry_points: [tests/validation/test_variance.py, tests/validation/test_bwrap_overhead.py, tests/validation/test_signal_detection.py]
+- depends_on: [sandbox]
+- doc: docs/features/variance_validation.md

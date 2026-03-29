@@ -1,51 +1,60 @@
-# Feature: Perf Parser
+# Perf Parser Feature
 
 ## Scope
 
-**In scope:** Parsing the CSV text output of `perf stat -x ','` (with optional `-r N` repeat) into structured Python dataclasses. Pure functions only -- no I/O, no subprocess calls.
+**In scope:**
+- Parsing `perf stat -x ',' -r N` CSV output into typed PerfCounters
+- Handling all edge cases: comments, empty lines, derived metrics, `<not counted>`, `<not supported>`
+- Line-by-line parsing via `parse_csv_line` and full-output assembly via `parse_perf_output`
 
-**Not in scope:** Running perf, managing subprocesses, variance analysis, or reward computation.
+**Not in scope:**
+- Running perf (that's the sandbox's job)
+- Interpreting counter values (that's the reward function's job)
 
 ## Data/Control Flow
 
-1. `parse_perf_output(csv_text)` receives the full stderr string from a `perf stat` invocation.
-2. Splits text by newlines and calls `parse_csv_line(line)` for each.
-3. `parse_csv_line` handles:
-   - Comment lines (`#`) and empty lines -> returns `None`
-   - `<not counted>` / `<not supported>` -> raises `CounterNotCountedError`
-   - Derived metric lines (empty event_name, spaces in event_name, float counter_value) -> returns `None`
-   - Valid data lines -> returns `PerfCSVLine` dataclass
-4. `parse_perf_output` collects non-None results, matches `event_name` against `PerfCounter` enum values.
-5. Verifies all 7 required counters are present (raises `CounterNotFoundError` if any missing).
-6. Returns assembled `PerfCounters` dataclass.
+```
+perf stat stderr (str)
+    │
+    ▼
+parse_perf_output(csv_text)
+    │
+    ├─ Split into lines
+    ├─ For each line: parse_csv_line(line)
+    │     ├─ Skip: comments (#), empty, derived metrics, non-integer values
+    │     ├─ Raise: <not counted>, <not supported>
+    │     └─ Return: PerfCSVLine(counter_value, unit, event_name, ...)
+    │
+    ├─ Filter: only keep lines where event_name matches PerfCounter enum
+    ├─ Verify: all 7 required counters present
+    └─ Assemble: PerfCounters dataclass
+```
+
+## CSV Format
+
+`perf stat -x ','` produces lines with these fields:
+```
+counter_value,unit,event_name,run_time,percentage[,variance]
+```
+
+- `counter_value`: integer count, or `<not counted>`/`<not supported>`
+- `unit`: usually empty for hardware counters
+- `event_name`: matches PerfCounter enum values (e.g., "cycles", "L1-dcache-load-misses")
+- `run_time`: nanoseconds the counter was active
+- `percentage`: percentage of time the counter was active (usually 100.00)
+- `variance`: only present with `-r` flag (percentage CV from perf's internal repetitions)
 
 ## Files
 
 | File | Role | Key exports |
 |------|------|-------------|
-| `src/perf_optimize/perf_parser.py` | Parser implementation | `parse_csv_line`, `parse_perf_output` |
-| `src/perf_optimize/types.py` | Data types | `PerfCSVLine`, `PerfCounters`, `PerfCounter` |
-| `src/perf_optimize/exceptions.py` | Error types | `PerfParseError`, `CounterNotFoundError`, `CounterNotCountedError` |
-| `tests/unit/test_perf_parser.py` | Unit tests | 37 test cases |
+| `src/perf_optimize/perf_parser.py` | Parser implementation | `parse_perf_output`, `parse_csv_line` |
+| `src/perf_optimize/types.py` | `PerfCSVLine` intermediate type, `PerfCounters` output type | |
+| `src/perf_optimize/exceptions.py` | `PerfParseError`, `CounterNotFoundError`, `CounterNotCountedError` | |
 
-## Invariants
+## Invariants and Constraints
 
-- `parse_csv_line` and `parse_perf_output` are pure functions with no side effects.
-- All 7 `PerfCounter` enum members must be present in output for `parse_perf_output` to succeed.
-- `PerfCSVLine` and `PerfCounters` are frozen dataclasses (immutable).
-- `<not counted>` / `<not supported>` always raises `CounterNotCountedError` with the counter name and raw value.
-- Lines with spaces in the event_name field are treated as derived metrics and skipped.
-- Float values in the counter_value field are treated as derived metrics and skipped.
-
-## Perf CSV Format
-
-```
-counter_value,unit,event_name,run_time,percentage[,variance]
-```
-
-- `counter_value`: integer (or `<not counted>` / `<not supported>`)
-- `unit`: string, often empty
-- `event_name`: string like `cycles`, `cache-misses`, etc.
-- `run_time`: integer nanoseconds
-- `percentage`: float (0-100)
-- `variance`: float, only present with `-r` flag
+1. **Pure functions**: No I/O, no side effects. Takes strings, returns dataclasses or raises exceptions.
+2. **All 7 counters required**: `parse_perf_output` raises `CounterNotFoundError` if any counter is missing.
+3. **Integer counter values only**: Floating-point values in the counter_value field indicate derived metrics and are skipped.
+4. **Event name matching**: Only lines whose `event_name` exactly matches a `PerfCounter` enum value are collected.
