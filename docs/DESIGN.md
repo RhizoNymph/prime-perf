@@ -63,22 +63,39 @@ No intermediate per-turn rewards to avoid incentivizing mediocre early submissio
 - Code passes all tests → performance reward kicks in
 
 **Performance reward (only when all tests pass):**
+
+The reward is computed from a hardware-profile-aware weight map. Counters that are
+`None` (unavailable on the current architecture) are skipped, and weights are
+normalized over the available counters.
+
 ```
-improvements = {
-    "cycles":               (ref - agent) / ref,
-    "L1-dcache-load-misses": (ref - agent) / ref,
-    "LLC-load-misses":       (ref - agent) / ref,
-    "branch-misses":         (ref - agent) / ref,
+# Define weights per counter. Weights are normalized over available counters.
+weight_map = {
+    "cycles":               0.5,
+    "l1_dcache_load_misses": 0.2,
+    "llc_load_misses":       0.2,   # None on AMD → skipped
+    "cache_misses":          0.2,   # AMD substitute for LLC signal
+    "branch_misses":         0.1,
 }
 
-reward = (
-    0.5 * improvements["cycles"] +
-    0.2 * improvements["L1-dcache-load-misses"] +
-    0.2 * improvements["LLC-load-misses"] +
-    0.1 * improvements["branch-misses"]
-)
-reward = max(reward, 0.0)  # floor at 0 for correct but slower code
+total_weight = 0
+weighted_sum = 0
+for counter, weight in weight_map.items():
+    ref_val = getattr(ref_counters, counter)
+    agent_val = getattr(agent_counters, counter)
+    if ref_val is not None and agent_val is not None and ref_val > 0:
+        improvement = (ref_val - agent_val) / ref_val
+        weighted_sum += weight * improvement
+        total_weight += weight
+
+reward = max(weighted_sum / total_weight, 0.0) if total_weight > 0 else 0.0
 ```
+
+On AMD, `llc_load_misses` is `None` (no separate LLC counter), so the effective
+weights become cycles=0.5, l1_dcache=0.2, cache_misses=0.2, branch=0.1 normalized
+over total_weight=1.0. On Intel, `llc_load_misses` is available and `cache_misses`
+overlaps semantically — the weight map may need tuning per architecture to avoid
+double-counting.
 
 Cycles dominate because they're closest to wall-clock time. The decomposed component
 signals provide denser gradient for specific optimization types (e.g., cache misses
@@ -105,6 +122,7 @@ tool-calling schema is needed.
 - **Adapter:** LoRA on all linear layers, r=64, α=16
 - **Compute dtype:** bfloat16 for forward/backward pass
 - **Training:** GRPO via prime-rl on 3x RTX 3090 (24GB each)
+- **Host CPUs:** AMD (Zen4 architecture) — affects available perf counters
 - **Learning rate:** ~1e-4 (higher than standard due to quantization noise)
 
 QLoRA is well-suited here: the quantization noise may actually enhance exploration in
@@ -134,6 +152,13 @@ overhead, and no effect on perf measurement variance.
 **Perf access:** Requires `kernel.perf_event_paranoid <= 1` on the host. bwrap uses
 the same kernel, so hardware counters are accessible directly.
 
+**Shell:** Uses `/usr/bin/bash` (not `sh`/`dash`) for the ulimit wrapper inside bwrap
+because dash lacks `ulimit -u` (process limit) support.
+
+**CSV format note:** With `-r` (repeat), perf stat inserts a variance field (with `%`
+suffix) at position 3, shifting run_time and percentage right. The parser detects
+this by checking if field[3] ends with `%`.
+
 ### Measurement Methodology
 
 Variance reduction for reliable reward signals:
@@ -143,15 +168,30 @@ Variance reduction for reliable reward signals:
 - `perf stat -r 5` for 5 statistical repetitions (medians preferred)
 - `perf stat -x ','` for machine-parseable CSV output
 - `isolcpus` kernel parameter recommended for dedicated measurement core
+- `kernel.perf_event_paranoid` must be ≤1 on all nodes
 
-Counters collected:
+**Hardware profiles:** The counter set is architecture-dependent. A `HardwareProfile`
+maps logical counter fields to hardware perf events and is auto-detected from the CPU
+vendor. Only counters known to be supported are requested, and the count must fit
+within the PMU's general-purpose counter slots to avoid multiplexing (which causes
+`<not counted>` errors and unreliable measurements).
+
+**AMD Zen4 profile (5 events, fits 6 PMU counters):**
 - `cycles` — total CPU cycles
 - `instructions` — total instructions retired
-- `cache-references` — total cache accesses
-- `cache-misses` — last-level cache misses
+- `cache-misses` — L3 cache misses (generic event, = LLC misses on AMD)
 - `L1-dcache-load-misses` — L1 data cache misses
-- `LLC-load-misses` — last-level cache load misses
 - `branch-misses` — branch mispredictions
+- `LLC-load-misses` — **not available** on AMD (field stays `None`)
+- `cache-references` — **omitted** to avoid PMU contention
+
+**Intel Core profile (7 events):**
+- `cycles`, `instructions`, `cache-references`, `cache-misses`,
+  `L1-dcache-load-misses`, `LLC-load-misses`, `branch-misses`
+
+`PerfCounters` fields are `float | None`. `None` means the counter is not available
+on the current hardware — distinct from `0` which means measured and zero events
+occurred. Reward computation must skip `None` counters and redistribute weight.
 
 IPC (instructions per cycle) is derived as instructions/cycles.
 
@@ -160,24 +200,35 @@ IPC (instructions per cycle) is derived as instructions/cycles.
 ### Environment Module Structure
 
 ```
+src/perf_optimize/
+  __init__.py
+  types.py               # PerfCounters (float|None), ExecutionResult, etc.
+  exceptions.py          # Structured error hierarchy
+  counters.py            # HardwareProfile, AMD_ZEN, INTEL_CORE, detect_profile()
+  config.py              # SandboxConfig with hardware_profile
+  perf_parser.py         # Parse perf stat CSV output using HardwareProfile
+  bwrap.py               # Command builders for bwrap, gcc, perf stat
+  sandbox.py             # PerfSandbox: async orchestration
+
 environments/
   perf_optimize/
-    perf_optimize.py       # Main environment: PerfOptimizeEnv class + load_environment()
-    sandbox.py             # PerfSandbox: bwrap + compilation + perf measurement
-    problems.py            # Problem bank loader and dataset construction
-    pyproject.toml         # Package metadata and dependencies
-    README.md              # Documentation
-    problems/              # Problem definitions
+    perf_optimize.py     # PerfOptimizeEnv (Phase 2)
+    problems.py          # Problem bank loader (Phase 1)
+    problems/            # Problem definitions
       matmul/
-        spec.md            # Problem specification (natural language)
-        reference.c        # Naive reference solution
+        spec.md          # Problem specification (natural language)
+        reference.c      # Naive reference solution
         tests/
-          inputs/          # Test input files
-          expected/        # Expected outputs
-        perf_input.bin     # Larger input for performance measurement
+          inputs/        # Binary test input files
+          expected/      # Expected outputs (generated by running reference.c)
+        perf_input.bin   # Larger input for performance measurement
       nbody/
         ...
 ```
+
+**Note:** Expected test outputs must be generated by compiling and running the
+reference C program, not computed independently (e.g., not via NumPy), because
+float32 accumulation order differs between implementations.
 
 ### Environment Class: PerfOptimizeEnv
 
@@ -223,13 +274,21 @@ A helper class wrapping bubblewrap + gcc + perf stat. All methods are async-safe
 ```python
 @dataclass
 class ExecutionResult:
-    compiled: bool
-    compiler_errors: str | None
-    tests_passed: int
-    tests_total: int
-    test_errors: list[str]
-    perf_counters: dict[str, float] | None   # None if tests didn't all pass
+    compilation: CompilationSuccess | CompilationFailure
+    test_report: TestReport | None           # None if compilation failed
+    perf_counters: PerfCounters | None       # None if tests didn't all pass
     wall_clock_ms: float | None
+
+# PerfCounters fields are float | None (None = counter unavailable on this hardware)
+@dataclass
+class PerfCounters:
+    cycles: float                            # Always present
+    instructions: float                      # Always present
+    cache_references: float | None           # None on AMD (omitted for PMU fit)
+    cache_misses: float | None               # L3 misses on AMD
+    l1_dcache_load_misses: float | None
+    llc_load_misses: float | None            # None on AMD
+    branch_misses: float | None
 ```
 
 ### Rubric
@@ -249,9 +308,10 @@ rubric.add_metric(num_correct_submissions_metric)
 in the entire episode, 0.0 otherwise. Ensures the dominant failure mode (never
 compiling or never passing tests) is strongly penalized.
 
-**`perf_reward(completion, info, state)`** — Computes the weighted counter improvement
-score from the agent's best correct submission vs the reference. Only fires when
-`state["best_perf"]` is set (i.e., at least one correct submission occurred).
+**`perf_reward(completion, info, state)`** — Computes the profile-aware weighted
+counter improvement score from the agent's best correct submission vs the reference.
+Only fires when `state["best_perf"]` is set. Skips `None` counters and normalizes
+weights over available counters (see reward formula above).
 
 **Zero-weight metrics** for observability: wall_clock_ms, best cycle count,
 compilation count, correct submission count. These appear in eval/training logs but
@@ -313,8 +373,9 @@ and how to address them.
   cycles:               {ref_cycles:,}
   instructions:         {ref_instructions:,}
   IPC:                  {ref_ipc:.2f}
-  L1-dcache-load-misses: {ref_l1_misses:,}
-  LLC-load-misses:      {ref_llc_misses:,}
+  L1-dcache-load-misses: {ref_l1_misses:,}       (if available)
+  LLC-load-misses:      {ref_llc_misses:,}        (if available, Intel only)
+  cache-misses:         {ref_cache_misses:,}      (if available)
   branch-misses:        {ref_branch_misses:,}
 
 Write an optimized solution.
@@ -351,7 +412,8 @@ project = "perf-optimize"
 1. **Measurement variance:** If perf counter readings are too noisy, the reward
    signal will be unreliable. Mitigation: aggressive variance reduction (CPU pinning,
    governor, turbo off, perf -r 5), and validate variance is acceptable before
-   training.
+   training. **Phase 0 finding:** CV < 2% for cycles on AMD Zen4 with 5-event profile.
+   Signal/noise ratio > 50x for tiled vs naive matmul.
 
 2. **Problem difficulty calibration:** If the base model can't write compilable C
    code at all, the reward is -1.0 for every episode. Mitigation: evaluate baseline
@@ -363,13 +425,29 @@ project = "perf-optimize"
    functionality). Mitigation: correctness gating via test suites. Tests must be
    thorough enough to catch functional regressions.
 
-4. **Sandbox + perf interaction:** perf_event_paranoid settings, capabilities, or
-   kernel restrictions might interfere with perf inside bwrap. Mitigation: test this
-   early and in isolation before building the environment.
+4. **Sandbox + perf interaction:** ~~perf_event_paranoid settings, capabilities, or
+   kernel restrictions might interfere with perf inside bwrap.~~ **Resolved in Phase
+   0:** bwrap uses the host kernel so perf works directly. Requires
+   `perf_event_paranoid ≤ 1`. Uses `/usr/bin/bash` (not dash) for ulimit wrapper.
 
 5. **Generation quality vs training signal:** If the model produces non-compiling
    code >90% of the time, training signal is too sparse. Mitigation: SFT warmup,
    or start with a stronger code model (Qwen3-Coder-Next 80B-A3B as alternative).
+
+6. **PMU counter multiplexing:** Requesting more events than the CPU has PMU counter
+   slots causes perf to multiplex, producing `<not counted>` errors and inaccurate
+   readings. **Resolved:** Hardware profiles limit event count to fit PMU slots
+   (5 on AMD Zen4, 7 on Intel Core). `<not counted>` is now a hard error.
+
+7. **Architecture-dependent counter availability:** AMD lacks `LLC-load-misses`;
+   Intel lacks some AMD-specific events. **Resolved:** `HardwareProfile` auto-detects
+   CPU vendor and selects the right counter set. `PerfCounters` uses `float | None`
+   so unavailable counters are explicitly represented, not silently zeroed.
+
+8. **Float32 precision across implementations:** NumPy's `a @ b` uses different
+   accumulation order than C's triple-nested loop, producing bitwise-different results
+   even with the same inputs. **Resolved:** Test expected outputs must be generated
+   by running the reference C program, never computed independently in Python.
 
 ## Related Work
 
