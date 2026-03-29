@@ -6,6 +6,8 @@ Requires bwrap, gcc, perf, and perf_event_paranoid <= 1.
 from __future__ import annotations
 
 import struct
+import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +20,25 @@ from tests.conftest import requires_all_tools, requires_bwrap, requires_gcc
 
 FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "c_programs"
 
+# Cache compiled reference binary to avoid recompiling per test
+_REFERENCE_BINARY: Path | None = None
+_REFERENCE_TMPDIR: tempfile.TemporaryDirectory | None = None  # type: ignore[type-arg]
+
+
+def _get_reference_binary() -> Path:
+    """Compile matmul_naive.c once and cache the binary for generating expected output."""
+    global _REFERENCE_BINARY, _REFERENCE_TMPDIR
+    if _REFERENCE_BINARY is not None and _REFERENCE_BINARY.exists():
+        return _REFERENCE_BINARY
+    _REFERENCE_TMPDIR = tempfile.TemporaryDirectory(prefix="perf_opt_ref_")
+    binary = Path(_REFERENCE_TMPDIR.name) / "matmul_ref"
+    subprocess.run(
+        ["gcc", "-O2", "-lm", "-o", str(binary), str(FIXTURES / "matmul_naive.c")],
+        check=True,
+    )
+    _REFERENCE_BINARY = binary
+    return binary
+
 
 def _make_matmul_input(n: int, seed: int = 42) -> bytes:
     """Generate binary input for the matmul programs."""
@@ -28,12 +49,21 @@ def _make_matmul_input(n: int, seed: int = 42) -> bytes:
 
 
 def _make_matmul_expected(n: int, seed: int = 42) -> bytes:
-    """Compute expected matmul output."""
-    rng = np.random.default_rng(seed)
-    a = rng.random((n, n), dtype=np.float32)
-    b = rng.random((n, n), dtype=np.float32)
-    c = a @ b
-    return c.tobytes()
+    """Generate expected output by running the reference C program.
+
+    This ensures byte-exact match since the same C code and compilation
+    flags produce the same floating-point results.
+    """
+    binary = _get_reference_binary()
+    input_data = _make_matmul_input(n, seed)
+    result = subprocess.run(
+        [str(binary)],
+        input=input_data,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, f"Reference matmul failed: {result.stderr.decode()}"
+    return result.stdout
 
 
 # ── Compilation tests ────────────────────────────────────────────────────────
