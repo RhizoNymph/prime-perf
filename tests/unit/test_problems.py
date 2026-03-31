@@ -153,10 +153,10 @@ class TestBuildDatasetRows:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
         assert len(rows) == 1
 
-    def test_row_has_prompt(self, problem_dir: Path) -> None:
+    def test_row_has_question(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
-        assert "Test Problem" in rows[0]["prompt"]
-        assert "int main" in rows[0]["prompt"]
+        assert "Test Problem" in rows[0]["question"]
+        assert "int main" in rows[0]["question"]
 
     def test_row_has_info(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
@@ -166,9 +166,9 @@ class TestBuildDatasetRows:
         assert info["comparison"] == "exact"
         assert len(info["test_inputs"]) == 2
 
-    def test_row_answer_is_none(self, problem_dir: Path) -> None:
+    def test_row_answer_is_empty_string(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
-        assert rows[0]["answer"] is None
+        assert rows[0]["answer"] == ""
 
     def test_row_has_reference_perf(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")

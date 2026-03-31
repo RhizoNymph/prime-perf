@@ -253,8 +253,8 @@ def build_dataset_rows(
             info["reference_perf"] = problem.reference_perf.to_dict()
 
         rows.append({
-            "prompt": prompt,
-            "answer": None,
+            "question": prompt,
+            "answer": "",
             "info": info,
         })
 
