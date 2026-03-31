@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from verifiers.envs.multiturn_env import MultiTurnEnv
-from verifiers.rubrics import Rubric
+from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ChatCompletion, ChatMessage, Info, Messages, SamplingArgs, State
 
 from .config import SandboxConfig
@@ -27,7 +27,7 @@ from .prompts import (
     format_system_prompt,
     format_test_failure,
 )
-from .reward import correctness_gate, perf_reward
+from .reward import compute_weighted_improvement, correctness_gate, perf_reward
 from .sandbox import PerfSandbox
 from .types import CompilationFailure
 
@@ -43,8 +43,29 @@ _CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*?)\s*</code>", r
 # Regex to detect <submit/> tag.
 _SUBMIT_PATTERN = re.compile(r"<submit\s*/?>")
 
-# Default problems directory relative to this package.
-_DEFAULT_PROBLEMS_DIR = Path(__file__).parent.parent.parent / "problems"
+
+def _default_problems_dir() -> Path:
+    """Resolve the default problems directory.
+
+    Tries two locations:
+    1. Bundled with the package (wheel install): perf_optimize/problems/
+    2. Repo checkout: ../../problems/ relative to this file
+    """
+    # Wheel-installed location: problems/ is force-included next to the package
+    pkg_dir = Path(__file__).parent / "problems"
+    if pkg_dir.is_dir():
+        return pkg_dir
+
+    # Repo checkout: problems/ at repository root
+    repo_dir = Path(__file__).parent.parent.parent / "problems"
+    if repo_dir.is_dir():
+        return repo_dir
+
+    msg = (
+        "Cannot find problems directory. Pass problems_dir explicitly, "
+        "or ensure the package was installed with problem data."
+    )
+    raise FileNotFoundError(msg)
 
 
 def _extract_code(text: str) -> str | None:
@@ -82,7 +103,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
         problems: list[str] | None = None,
     ) -> None:
         if problems_dir is None:
-            problems_dir = _DEFAULT_PROBLEMS_DIR
+            problems_dir = _default_problems_dir()
 
         self._sandbox_config = SandboxConfig.from_env(language)
         self._sandbox = PerfSandbox(self._sandbox_config)
@@ -143,21 +164,10 @@ class PerfOptimizeEnv(MultiTurnEnv):
     def is_completed(self, messages: Messages, state: State, **_kwargs: Any) -> bool:
         """Check if the rollout should end.
 
-        Ends when the agent submits or the last assistant message has <submit/>.
+        Only checks the ``submitted`` flag. The rollout loop is responsible for
+        setting this flag *after* processing any code in the same message.
         """
-        if state.get("submitted", False):
-            return True
-
-        # Check if the last assistant message contains <submit/>
-        if isinstance(messages, list) and messages:
-            last = messages[-1]
-            if isinstance(last, dict) and last.get("role") == "assistant":
-                content = last.get("content", "")
-                if content and _has_submit(content):
-                    state["submitted"] = True
-                    return True
-
-        return False
+        return state.get("submitted", False)
 
     async def _async_env_response(
         self, messages: Messages, state: State
@@ -220,15 +230,19 @@ class PerfOptimizeEnv(MultiTurnEnv):
         if result.perf_counters is not None:
             agent_perf = result.perf_counters.to_dict()
 
-            # Track best performance (by cycles)
+            # Track best performance by weighted reward score
+            ref_perf = state.get("reference_perf", {})
             current_best = state.get("best_perf_dict")
-            if current_best is None or agent_perf.get("cycles", float("inf")) < current_best.get(
-                "cycles", float("inf")
-            ):
+            if current_best is None:
                 state["best_perf_dict"] = agent_perf
                 state["best_wall_clock_ms"] = result.wall_clock_ms
+            else:
+                new_score = compute_weighted_improvement(ref_perf, agent_perf)
+                best_score = compute_weighted_improvement(ref_perf, current_best)
+                if new_score > best_score:
+                    state["best_perf_dict"] = agent_perf
+                    state["best_wall_clock_ms"] = result.wall_clock_ms
 
-            ref_perf = state.get("reference_perf", {})
             feedback = format_perf_feedback(agent_perf, ref_perf, turn, max_turns)
         else:
             feedback = (
@@ -301,14 +315,21 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
             state["turn"] += 1
 
-            if self.is_completed(rollout, state, **kwargs) or state["turn"] >= self.max_turns:
-                is_completed = True
-            else:
-                # The key difference: await async env_response
+            # Always process the submission before checking termination.
+            # This ensures code in the final turn or alongside <submit/> is scored.
+            has_code = _extract_code(response_text) is not None
+            at_limit = state["turn"] >= self.max_turns
+            wants_submit = _has_submit(response_text)
+
+            if has_code or (not at_limit and not wants_submit):
                 env_msgs, state = await self._async_env_response(rollout, state)
                 assert isinstance(env_msgs, list)
                 rollout += env_msgs
                 completion += env_msgs
+
+            if wants_submit or at_limit:
+                state["submitted"] = state["submitted"] or wants_submit
+                is_completed = True
 
         return completion, state
 

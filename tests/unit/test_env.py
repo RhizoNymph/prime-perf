@@ -101,6 +101,8 @@ class TestSetupState:
 
 
 class TestIsCompleted:
+    """is_completed only checks state['submitted'] — submit detection is in rollout."""
+
     def test_submitted_state_returns_true(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
@@ -108,24 +110,17 @@ class TestIsCompleted:
         messages: list = [{"role": "assistant", "content": "done"}]
         assert PerfOptimizeEnv.is_completed(None, messages, state) is True  # type: ignore[arg-type]
 
-    def test_submit_tag_returns_true(self) -> None:
+    def test_not_submitted_returns_false(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
         state: dict = {"submitted": False}
         messages: list = [{"role": "assistant", "content": "Here you go. <submit/>"}]
-        assert PerfOptimizeEnv.is_completed(None, messages, state) is True  # type: ignore[arg-type]
-        assert state["submitted"] is True
-
-    def test_no_submit_returns_false(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
-
-        state: dict = {"submitted": False}
-        messages: list = [{"role": "assistant", "content": "Working on it..."}]
+        # is_completed does NOT check message content — rollout handles that
         assert PerfOptimizeEnv.is_completed(None, messages, state) is False  # type: ignore[arg-type]
 
-    def test_user_message_last_returns_false(self) -> None:
+    def test_missing_key_returns_false(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
-        state: dict = {"submitted": False}
-        messages: list = [{"role": "user", "content": "Your tests failed."}]
+        state: dict = {}
+        messages: list = [{"role": "assistant", "content": "Working on it..."}]
         assert PerfOptimizeEnv.is_completed(None, messages, state) is False  # type: ignore[arg-type]
