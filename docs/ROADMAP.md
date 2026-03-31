@@ -24,95 +24,38 @@
 
 ---
 
-## Phase 1: Problem Bank (V1)
+## Phase 1: Problem Bank (V1) ✅
 
-**Goal:** Create 5 well-calibrated problems with reference solutions, test suites,
-and baseline perf measurements.
+**Status: Complete** (PR #9)
 
-**Tasks:**
+**Results:**
+- 5 problems × 4 languages = 20 reference solutions, all validated
+- Per-problem binary I/O with generation scripts
+- Infrastructure: comparison.py (exact + tolerance), problems.py (loader + dataset builder)
+- 214 tests passing
 
-1.1. Define the problem specification format: spec.md template, directory structure
-     conventions, test input/output format.
+**Problems implemented:**
 
-1.2. Implement the first problem: **matmul** (NxN float matrix multiply).
-     - spec.md: problem description, binary I/O format (int32 N + float32 arrays)
-     - **4 reference solutions:** reference/solution.c, solution.rs, solution.py,
-       solution.ts — all using naive triple-nested loop, same binary I/O format
-     - tests/: 5 input pairs (small N), expected outputs generated **by compiling
-       and running the C reference** (canonical — same result for all languages
-       since binary I/O and float32 arithmetic should match)
-     - perf_input.bin: N=1024 input for performance measurement
-     - Validate: all 4 references compile, pass tests, perf counters are stable
-     - **Note:** matmul_naive.c and matmul_tiled.c already exist in fixtures/c_programs/
-       from Phase 0. Move and adapt these as the matmul C reference.
-     - **Python reference:** naive loops with struct.unpack + manual accumulation
-       (not numpy — that's the optimization the agent should discover)
-     - **TypeScript reference:** naive loops with Buffer + Float32Array
+| Problem | Bottleneck | Comparison | Notable |
+|---------|-----------|-----------|---------|
+| matmul | Cache (memory) | exact | Adapted from Phase 0 fixtures |
+| stencil | Memory bandwidth | exact | Double-buffered grid swap |
+| sort | Branch-heavy | exact | Float32 sort, NaN→end, -0.0<+0.0. Stable merge sort in C (qsort isn't stable), bit-level sign detection |
+| nbody | Compute+memory | tolerance (1e-4) | Leapfrog integration, G=1.0, softening=1e-6 |
+| hash_table | Cache+alloc | exact | FNV-1a hash, string binary I/O, last-value-wins for duplicates |
 
-1.3. Implement **stencil** (2D 5-point stencil, iterated).
-     - Memory bandwidth bound, benefits from tiling and prefetch
-     - Different bottleneck profile from matmul
-     - 4 reference solutions (C, Rust, Python, TypeScript)
-
-1.4. Implement **sort** (integer array sort, large N).
-     - Branch-heavy, benefits from branchless techniques
-     - Tests must verify ordering + stability if applicable
-     - 4 reference solutions
-
-1.5. Implement **nbody** (gravitational N-body simulation, single timestep).
-     - Compute + memory bound, benefits from SoA layout and SIMD
-     - Float comparison tolerance in test validation
-     - 4 reference solutions
-
-1.6. Implement **hash_table** (string key lookup benchmark).
-     - Allocation + cache behavior, benefits from open addressing, cache-line
-       alignment
-     - Functional tests: insert N keys, look up all, verify all found
-     - 4 reference solutions
-
-1.7. For each problem **and each language**, measure and record reference perf
-     counters. Store in `reference_perf/{lang}_{profile}.json`. Format:
-     - `language`: "c", "rust", "python", "typescript"
-     - `hardware_profile`: "amd_zen" or "intel_core"
-     - Counter values as `float | null` (matching PerfCounters semantics)
-     - Reference measurements are architecture-specific AND language-specific.
-       Python/TS references will have dramatically higher cycle counts than C/Rust.
-
-1.8. Write `problems.py`: a loader that reads the problem directory structure and
-     constructs a HuggingFace Dataset. Must accept a `language` parameter to select
-     which reference solution and perf baseline to use.
-
-1.9. **Test output generation tooling:** Write a script that compiles the C reference
-     for each problem and runs it against all test inputs to produce expected outputs.
-     These are shared across all 4 languages (same computation, same binary I/O).
-     All non-C references must be validated against the same expected outputs.
-
-**Problem directory structure:**
-```
-problems/
-  matmul/
-    spec.md
-    tests/
-      input_0.bin
-      expected_0.bin      # Generated from C reference (shared)
-    perf_input.bin
-    reference/
-      solution.c
-      solution.rs
-      solution.py
-      solution.ts
-    reference_perf/
-      c_amd_zen.json
-      rust_amd_zen.json
-      python_amd_zen.json
-      typescript_amd_zen.json
-```
-
-**Deliverable:** `problems/` directory with 5 complete problems × 4 languages.
-`problems.py` module that produces a valid verifiers-compatible Dataset.
-
-**Exit criteria:** All 5 problems × 4 languages have stable reference measurements
-and test suites that catch meaningful functional regressions.
+**Key learnings carried forward:**
+- Float32 precision across languages: C/Rust match exactly; Python needs
+  `numpy.float32` scalars; TypeScript needs `Math.fround()` after each op
+- C's `qsort` is not stable — used manual merge sort for sort problem
+- GCC -O2 optimizes away `signbit()` when `a == b` — used `memcpy` to
+  uint32_t + bit 31 check instead
+- nbody tolerance bumped from 1e-5 to 1e-4: Python float64 accumulation
+  diverges from C float32 by up to 1.84e-5 at N=20
+- Expected outputs generated by running C reference (not computed in Python)
+  to avoid accumulation order mismatches
+- Reference perf measurements still needed (task 1.7) — deferred to when
+  the sandbox is wired into the verifiers environment in Phase 2
 
 ---
 
@@ -374,7 +317,7 @@ Phase 4. Phase 6 can begin after Phase 4 results are solid.
 | Phase | Estimated Time | Notes |
 |-------|---------------|-------|
 | 0 | ~~2-3 days~~ **Done** | Complete. Measurement pipeline validated on AMD. |
-| 1 | 5-7 days | 5 problems × 4 languages with test suites |
+| 1 | ~~5-7 days~~ **Done** | 5 problems × 4 languages, all validated |
 | 2 | 3-4 days | Verifiers integration, profile-aware reward |
 | 3 | 3-5 days | Includes possible SFT warmup |
 | 4 | 1-2 weeks | Longer training runs, hyperparameter sweeps |
