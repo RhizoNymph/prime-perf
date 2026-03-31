@@ -14,8 +14,10 @@ if TYPE_CHECKING:
 
 import pytest
 
-from perf_optimize.env import PerfOptimizeEnv
-from perf_optimize.languages import Language
+verifiers = pytest.importorskip("verifiers", reason="verifiers SDK not installed")
+
+from perf_optimize.env import PerfOptimizeEnv  # noqa: E402
+from perf_optimize.languages import Language  # noqa: E402
 
 
 def _make_problem_dir(tmp_path: Path) -> Path:

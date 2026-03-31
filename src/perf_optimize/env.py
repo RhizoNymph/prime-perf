@@ -18,6 +18,7 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ChatCompletion, ChatMessage, Info, Messages, SamplingArgs, State
 
 from .config import SandboxConfig
+from .exceptions import PerfMeasurementError
 from .languages import Language
 from .problems import build_dataset_rows
 from .prompts import (
@@ -116,6 +117,17 @@ class PerfOptimizeEnv(MultiTurnEnv):
         if problems is not None:
             rows = [r for r in rows if r["info"]["problem_name"] in problems]
 
+        # Reject problems that lack reference perf baselines — without them
+        # perf_reward() always returns 0.0 and training degrades to correctness-only.
+        missing = [r["info"]["problem_name"] for r in rows if "reference_perf" not in r["info"]]
+        if missing:
+            msg = (
+                f"Problems missing reference_perf baselines: {missing}. "
+                f"Run perf measurement for {language.value}/{profile_name} first, "
+                f"or exclude these problems via the `problems` filter."
+            )
+            raise ValueError(msg)
+
         # verifiers expects a HuggingFace Dataset with "question" column
         from datasets import Dataset as HFDataset
 
@@ -196,14 +208,30 @@ class PerfOptimizeEnv(MultiTurnEnv):
         # Run the full pipeline: compile → test → perf
         from .comparison import ComparisonMode
 
-        result = await self._sandbox.compile_and_run(
-            source_code=code,
-            test_inputs=state["test_inputs"],
-            expected_outputs=state["expected_outputs"],
-            perf_input=state["perf_input"],
-            comparison=ComparisonMode(state["comparison"]),
-            tolerance=state["tolerance"],
-        )
+        perf_error: str | None = None
+        try:
+            result = await self._sandbox.compile_and_run(
+                source_code=code,
+                test_inputs=state["test_inputs"],
+                expected_outputs=state["expected_outputs"],
+                perf_input=state["perf_input"],
+                comparison=ComparisonMode(state["comparison"]),
+                tolerance=state["tolerance"],
+            )
+        except PerfMeasurementError as exc:
+            # PerfMeasurementError is raised only after tests pass (during _run_perf),
+            # so compilation and correctness are fine — we just lack perf data.
+            logger.warning("perf_measurement_failed", error=str(exc))
+            perf_error = str(exc)
+            # Build a minimal result to continue the episode
+            from .types import CompilationSuccess, ExecutionResult, TestReport, TestResult
+
+            result = ExecutionResult(
+                compilation=CompilationSuccess(),
+                test_report=TestReport(results=(TestResult(name="assumed", passed=True),)),
+                perf_counters=None,
+                wall_clock_ms=None,
+            )
 
         # Handle compilation failure
         if isinstance(result.compilation, CompilationFailure):
@@ -245,9 +273,10 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
             feedback = format_perf_feedback(agent_perf, ref_perf, turn, max_turns)
         else:
+            detail = f": {perf_error}" if perf_error else ""
             feedback = (
                 f"**All tests passed** (turn {turn}/{max_turns}), "
-                "but perf measurement unavailable."
+                f"but perf measurement unavailable{detail}. Try again."
             )
 
         return [{"role": "user", "content": feedback}], state
