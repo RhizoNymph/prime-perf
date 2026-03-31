@@ -60,6 +60,22 @@ int main() {
     # Perf input (same format)
     (p / "perf_input.bin").write_bytes(struct.pack("<i", 42))
 
+    # Reference perf baselines (required by PerfOptimizeEnv validation).
+    # Use the hardware profile detected at runtime.
+    from perf_optimize.counters import detect_profile
+
+    profile = detect_profile()
+    perf_dir = p / "reference_perf"
+    perf_dir.mkdir()
+    baseline = {
+        "cycles": 500_000.0,
+        "instructions": 1_000_000.0,
+        "cache_misses": 1_000.0,
+        "l1_dcache_load_misses": 2_000.0,
+        "branch_misses": 500.0,
+    }
+    (perf_dir / f"c_{profile.name}.json").write_text(json.dumps(baseline))
+
     return problems
 
 

@@ -18,7 +18,13 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ChatCompletion, ChatMessage, Info, Messages, SamplingArgs, State
 
 from .config import SandboxConfig
-from .exceptions import PerfMeasurementError
+from .exceptions import (
+    CounterNotCountedError,
+    CounterNotFoundError,
+    CounterNotSupportedError,
+    PerfMeasurementError,
+    PerfParseError,
+)
 from .languages import Language
 from .problems import build_dataset_rows
 from .prompts import (
@@ -218,9 +224,16 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 comparison=ComparisonMode(state["comparison"]),
                 tolerance=state["tolerance"],
             )
-        except PerfMeasurementError as exc:
-            # PerfMeasurementError is raised only after tests pass (during _run_perf),
-            # so compilation and correctness are fine — we just lack perf data.
+        except (
+            PerfMeasurementError,
+            CounterNotSupportedError,
+            CounterNotCountedError,
+            CounterNotFoundError,
+            PerfParseError,
+        ) as exc:
+            # All of these are raised only after tests pass (during _run_perf /
+            # parse_perf_output), so compilation and correctness are fine — we
+            # just lack perf data.
             logger.warning("perf_measurement_failed", error=str(exc))
             perf_error = str(exc)
             # Build a minimal result to continue the episode
