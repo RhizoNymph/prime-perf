@@ -85,8 +85,9 @@ def _extract_code(text: str) -> str | None:
 
 
 def _has_submit(text: str) -> bool:
-    """Check if the model output contains a <submit/> tag."""
-    return _SUBMIT_PATTERN.search(text) is not None
+    """Check if the model output contains a <submit/> tag outside code blocks."""
+    stripped = _CODE_PATTERN.sub("", text)
+    return _SUBMIT_PATTERN.search(stripped) is not None
 
 
 class PerfOptimizeEnv(MultiTurnEnv):
@@ -181,7 +182,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         return state
 
-    def is_completed(self, messages: Messages, state: State, **_kwargs: Any) -> bool:
+    def _check_submitted(self, state: State) -> bool:
         """Check if the rollout should end.
 
         Only checks the ``submitted`` flag. The rollout loop is responsible for
@@ -274,7 +275,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
             agent_perf = result.perf_counters.to_dict()
 
             # Track best performance by weighted reward score
-            ref_perf = state.get("reference_perf", {})
+            ref_perf = state.get("reference_perf") or {}
             current_best = state.get("best_perf_dict")
             if current_best is None:
                 state["best_perf_dict"] = agent_perf
@@ -331,7 +332,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
         rollout: list[ChatMessage] = deepcopy(prompt)
 
         while not is_completed:
-            if self.is_completed(rollout, state, **kwargs):
+            if self._check_submitted(state):
                 is_completed = True
                 break
 
@@ -375,6 +376,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 state["submitted"] = state["submitted"] or wants_submit
                 is_completed = True
 
+        state["completion"] = completion
         return completion, state
 
     def env_response(

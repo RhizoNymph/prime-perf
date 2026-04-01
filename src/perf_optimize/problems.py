@@ -130,6 +130,9 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
 
     tests_dir = problem_dir / "tests"
     test_inputs, expected_outputs = _load_test_files(tests_dir)
+    if not test_inputs:
+        msg = f"No test files found in {tests_dir} — at least one input_0.bin is required"
+        raise FileNotFoundError(msg)
 
     perf_input_file = problem_dir / "perf_input.bin"
     perf_input = perf_input_file.read_bytes() if perf_input_file.exists() else b""

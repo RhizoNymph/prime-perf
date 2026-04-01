@@ -67,6 +67,10 @@ class TestHasSubmit:
         text = '<code lang="c">// <submit/>\nint main() {}</code>'
         assert not _has_submit(text)
 
+    def test_submit_on_own_line_inside_code_block_does_not_match(self) -> None:
+        text = '<code lang="c">\n<submit/>\nint main() {}</code>'
+        assert not _has_submit(text)
+
     def test_submit_after_code_block(self) -> None:
         text = '<code lang="c">int main() {}</code>\n<submit/>'
         assert _has_submit(text)
@@ -113,27 +117,24 @@ class TestSetupState:
         assert result["correct_submissions"] == 0
 
 
-class TestIsCompleted:
-    """is_completed only checks state['submitted'] — submit detection is in rollout."""
+class TestCheckSubmitted:
+    """_check_submitted only checks state['submitted'] — submit detection is in rollout."""
 
     def test_submitted_state_returns_true(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
         state = {"submitted": True}
-        messages: list = [{"role": "assistant", "content": "done"}]
-        assert PerfOptimizeEnv.is_completed(None, messages, state) is True  # type: ignore[arg-type]
+        assert PerfOptimizeEnv._check_submitted(None, state) is True  # type: ignore[arg-type]
 
     def test_not_submitted_returns_false(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
         state: dict = {"submitted": False}
-        messages: list = [{"role": "assistant", "content": "Here you go. <submit/>"}]
-        # is_completed does NOT check message content — rollout handles that
-        assert PerfOptimizeEnv.is_completed(None, messages, state) is False  # type: ignore[arg-type]
+        # _check_submitted does NOT check message content — rollout handles that
+        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]
 
     def test_missing_key_returns_false(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
 
         state: dict = {}
-        messages: list = [{"role": "assistant", "content": "Working on it..."}]
-        assert PerfOptimizeEnv.is_completed(None, messages, state) is False  # type: ignore[arg-type]
+        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]

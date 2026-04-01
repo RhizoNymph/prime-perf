@@ -119,9 +119,31 @@ class TestLoadProblem:
         d = tmp_path / "no_comp"
         d.mkdir()
         (d / "spec.md").write_text("# Minimal\n")
-        (d / "tests").mkdir()
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
         spec = load_problem(d)
         assert spec.comparison == ComparisonMode.EXACT
+
+    def test_empty_tests_dir_raises(self, tmp_path: Path) -> None:
+        d = tmp_path / "no_tests"
+        d.mkdir()
+        (d / "spec.md").write_text("# Empty\n")
+        (d / "tests").mkdir()
+        with pytest.raises(FileNotFoundError, match="No test files found"):
+            load_problem(d)
+
+    def test_missing_expected_output_raises(self, tmp_path: Path) -> None:
+        d = tmp_path / "mismatched"
+        d.mkdir()
+        (d / "spec.md").write_text("# Mismatched\n")
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        # No expected_0.bin
+        with pytest.raises(FileNotFoundError, match="Missing expected output file"):
+            load_problem(d)
 
 
 class TestLoadProblemWithReference:
