@@ -230,18 +230,21 @@ class PerfSandbox:
             )
 
         # Step 3: Measure perf
+        t0 = asyncio.get_event_loop().time()
         perf_counters = await self._run_perf(work_dir)
+        wall_clock_ms = (asyncio.get_event_loop().time() - t0) * 1000.0
         logger.info(
             "perf_measured",
             cycles=perf_counters.cycles,
             ipc=f"{perf_counters.ipc:.2f}",
+            wall_clock_ms=f"{wall_clock_ms:.1f}",
         )
 
         return ExecutionResult(
             compilation=compilation,
             test_report=test_report,
             perf_counters=perf_counters,
-            wall_clock_ms=None,
+            wall_clock_ms=wall_clock_ms,
         )
 
     async def _compile(self, work_dir: str) -> CompilationResult:
