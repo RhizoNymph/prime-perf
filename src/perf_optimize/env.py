@@ -47,8 +47,9 @@ logger = structlog.get_logger(__name__)
 # The lang attribute is optional.
 _CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*?)\s*</code>", re.DOTALL)
 
-# Regex to detect <submit/> tag.
-_SUBMIT_PATTERN = re.compile(r"<submit\s*/?>")
+# Regex to detect <submit/> tag as a standalone command (on its own line).
+# Prevents false positives from mentions in prose or inside <code> blocks.
+_SUBMIT_PATTERN = re.compile(r"^\s*<submit\s*/?>\s*$", re.MULTILINE)
 
 
 def _default_problems_dir() -> Path:
@@ -123,16 +124,17 @@ class PerfOptimizeEnv(MultiTurnEnv):
         if problems is not None:
             rows = [r for r in rows if r["info"]["problem_name"] in problems]
 
-        # Reject problems that lack reference perf baselines — without them
-        # perf_reward() always returns 0.0 and training degrades to correctness-only.
+        # Warn about problems missing reference perf baselines — perf_reward()
+        # returns 0.0 for these, so training degrades to correctness-only.
         missing = [r["info"]["problem_name"] for r in rows if "reference_perf" not in r["info"]]
         if missing:
-            msg = (
-                f"Problems missing reference_perf baselines: {missing}. "
-                f"Run perf measurement for {language.value}/{profile_name} first, "
-                f"or exclude these problems via the `problems` filter."
+            logger.warning(
+                "problems_missing_baselines",
+                problems=missing,
+                language=language.value,
+                profile=profile_name,
+                hint="Run perf measurement to enable perf-based rewards for these problems.",
             )
-            raise ValueError(msg)
 
         # verifiers expects a HuggingFace Dataset with "question" column
         from datasets import Dataset as HFDataset

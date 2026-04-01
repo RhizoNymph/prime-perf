@@ -73,6 +73,10 @@ PerfOptimizeEnv.rollout(client, model, prompt, answer, info)
 
 ## Invariants and Constraints
 
+- Problems without `reference_perf` baselines are loaded with a warning — `perf_reward()`
+  returns 0.0 for them, degrading to correctness-only training.
+- `<submit/>` must appear on its own line (with optional whitespace) to trigger episode
+  termination. Inline mentions in prose or inside `<code>` blocks are ignored.
 - `env_response()` is sync (ABC requirement) but raises `NotImplementedError` — the
   async `_async_env_response()` is called from the overridden `rollout()` instead.
 - `rollout()` is a copy of `MultiTurnEnv.rollout()` with one change: `await

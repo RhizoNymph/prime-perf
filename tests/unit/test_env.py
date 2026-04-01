@@ -45,16 +45,29 @@ class TestExtractCode:
 
 
 class TestHasSubmit:
-    def test_submit_tag(self) -> None:
-        assert _has_submit("I'm done. <submit/>")
+    def test_submit_on_own_line(self) -> None:
+        assert _has_submit("I'm done.\n<submit/>")
+
+    def test_submit_with_surrounding_whitespace(self) -> None:
+        assert _has_submit("I'm done.\n  <submit/>  \nExtra text.")
 
     def test_submit_tag_with_space(self) -> None:
-        assert _has_submit("I'm done. <submit />")
+        assert _has_submit("I'm done.\n<submit />")
 
     def test_no_submit(self) -> None:
         assert not _has_submit("Here is my code.")
 
-    def test_submit_in_code(self) -> None:
+    def test_submit_inline_in_prose_does_not_match(self) -> None:
+        assert not _has_submit("I'll use <submit/> after one more iteration.")
+
+    def test_submit_in_backticks_does_not_match(self) -> None:
+        assert not _has_submit("Use `<submit/>` when ready.")
+
+    def test_submit_inside_code_block_does_not_match(self) -> None:
+        text = '<code lang="c">// <submit/>\nint main() {}</code>'
+        assert not _has_submit(text)
+
+    def test_submit_after_code_block(self) -> None:
         text = '<code lang="c">int main() {}</code>\n<submit/>'
         assert _has_submit(text)
 
