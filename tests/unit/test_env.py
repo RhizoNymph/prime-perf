@@ -77,7 +77,8 @@ class TestHasSubmit:
 
 
 class TestSetupState:
-    def test_decodes_test_data(self) -> None:
+    @pytest.mark.asyncio
+    async def test_decodes_test_data(self) -> None:
         """setup_state should decode base64 test data from info."""
         from perf_optimize.env import PerfOptimizeEnv
 
@@ -98,12 +99,10 @@ class TestSetupState:
             "completion": [],
             "answer": "",
             "task": "default",
-            "responses": [],
-            "turn": 0,
         }
 
         # Call setup_state as an unbound method — it doesn't use self
-        result = PerfOptimizeEnv.setup_state(None, state)  # type: ignore[arg-type]
+        result = await PerfOptimizeEnv.setup_state(None, state)  # type: ignore[arg-type]
 
         assert result["test_inputs"] == [test_input]
         assert result["expected_outputs"] == [expected_output]

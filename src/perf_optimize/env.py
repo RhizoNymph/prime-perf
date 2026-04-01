@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import base64
 import re
-from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
+import verifiers as vf
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import ChatCompletion, ChatMessage, Info, Messages, SamplingArgs, State
+from verifiers.types import ChatMessage, Messages, State
 
 from .config import SandboxConfig
 from .exceptions import (
@@ -37,9 +37,6 @@ from .prompts import (
 from .reward import compute_weighted_improvement, correctness_gate, perf_reward
 from .sandbox import PerfSandbox
 from .types import CompilationFailure
-
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
 
 logger = structlog.get_logger(__name__)
 
@@ -157,7 +154,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
             message_type="chat",
         )
 
-    def setup_state(self, state: State, **_kwargs: Any) -> State:
+    async def setup_state(self, state: State, **_kwargs: Any) -> State:
         """Initialize environment-specific tracking in state.
 
         Decodes base64 test data from info and sets up perf tracking fields.
@@ -190,29 +187,67 @@ class PerfOptimizeEnv(MultiTurnEnv):
         """
         return state.get("submitted", False)
 
-    async def _async_env_response(
-        self, messages: Messages, state: State
-    ) -> tuple[list[ChatMessage], State]:
-        """Process the agent's code submission asynchronously.
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        """Disabled — we handle max turns in env_response via final_env_response.
 
-        Extracts code from the model's response, compiles, tests, and measures
-        performance. Returns formatted feedback as a user message.
+        This ensures the last model response is always processed (compiled,
+        tested, measured) before termination, so the rubric scores correctly.
+        """
+        return False
+
+    async def env_response(
+        self, messages: Messages, state: State, **_kwargs: Any
+    ) -> Messages:
+        """Process the agent's code submission and return feedback.
+
+        Called by the framework's rollout loop via get_prompt_messages() after
+        each model response. Extracts code, compiles, tests, measures perf, and
+        returns formatted feedback. Sets ``state["final_env_response"]`` when
+        the rollout should terminate (submit tag or max turns).
         """
         assert isinstance(messages, list)
 
-        # Get the last assistant message
         last_msg = messages[-1]
         assert isinstance(last_msg, dict) and last_msg["role"] == "assistant"
         content = last_msg.get("content", "")
 
-        turn = state["turn"]
+        turn = len(state["trajectory"])
         max_turns = self.max_turns
 
-        # Extract code
+        has_code = _extract_code(content) is not None
+        wants_submit = _has_submit(content)
+        at_limit = turn >= max_turns
+
+        # Process code if present, or provide "no code" feedback when not terminating.
+        should_process = has_code or (not at_limit and not wants_submit)
+        if should_process:
+            feedback_msgs = await self._process_turn(content, state, turn, max_turns)
+        else:
+            feedback_msgs = []
+
+        # Signal termination to the framework via final_env_response.
+        if wants_submit or at_limit:
+            state["submitted"] = True
+            state["final_env_response"] = feedback_msgs
+
+        return feedback_msgs
+
+    async def _process_turn(
+        self,
+        content: str,
+        state: State,
+        turn: int,
+        max_turns: int,
+    ) -> list[ChatMessage]:
+        """Compile, test, and measure the agent's code submission.
+
+        Returns feedback messages. Mutates state tracking fields in-place.
+        """
         code = _extract_code(content)
         if code is None:
             feedback = format_no_code_found(turn, max_turns)
-            return [{"role": "user", "content": feedback}], state
+            return [{"role": "user", "content": feedback}]
 
         # Run the full pipeline: compile → test → perf
         from .comparison import ComparisonMode
@@ -234,12 +269,10 @@ class PerfOptimizeEnv(MultiTurnEnv):
             CounterNotFoundError,
             PerfParseError,
         ) as exc:
-            # All of these are raised only after tests pass (during _run_perf /
-            # parse_perf_output), so compilation and correctness are fine — we
-            # just lack perf data.
+            # Raised only after tests pass (during _run_perf / parse_perf_output),
+            # so compilation and correctness are fine — we just lack perf data.
             logger.warning("perf_measurement_failed", error=str(exc))
             perf_error = str(exc)
-            # Build a minimal result to continue the episode
             from .types import CompilationSuccess, ExecutionResult, TestReport, TestResult
 
             result = ExecutionResult(
@@ -254,7 +287,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
             state["compile_failures"] += 1
             stderr = result.compilation.stderr
             feedback = format_compile_error(stderr, turn, max_turns)
-            return [{"role": "user", "content": feedback}], state
+            return [{"role": "user", "content": feedback}]
 
         # Handle test failure
         if result.test_report is not None and not result.test_report.all_passed:
@@ -266,7 +299,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 turn,
                 max_turns,
             )
-            return [{"role": "user", "content": feedback}], state
+            return [{"role": "user", "content": feedback}]
 
         # Tests passed — record correct submission
         state["correct_submissions"] += 1
@@ -295,98 +328,4 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 f"but perf measurement unavailable{detail}. Try again."
             )
 
-        return [{"role": "user", "content": feedback}], state
-
-    async def rollout(
-        self,
-        client: AsyncOpenAI,
-        model: str,
-        prompt: Messages,
-        answer: str = "",
-        task: str = "default",
-        info: Info | None = None,
-        sampling_args: SamplingArgs | None = None,
-        **kwargs: Any,
-    ) -> tuple[Messages, State]:
-        """Run a multi-turn rollout with async env_response.
-
-        This is a copy of MultiTurnEnv.rollout() with the single change of
-        calling ``await self._async_env_response(...)`` instead of the sync
-        ``self.env_response(...)``.
-        """
-        info = info or {}
-        is_completed = False
-        state: State = {
-            "prompt": prompt,
-            "completion": [],
-            "answer": answer,
-            "task": task,
-            "info": info,
-            "responses": [],
-            "turn": 0,
-        }
-        state = self.setup_state(state)
-
-        assert isinstance(prompt, list)
-        completion: list[ChatMessage] = []
-        rollout: list[ChatMessage] = deepcopy(prompt)
-
-        while not is_completed:
-            if self._check_submitted(state):
-                is_completed = True
-                break
-
-            response = await self.get_model_response(
-                client=client,
-                model=model,
-                prompt=rollout,
-                oai_tools=info.get("oai_tools", None),
-                sampling_args=sampling_args,
-                message_type=self.message_type,
-            )
-            state["responses"].append(response)
-
-            assert isinstance(response, ChatCompletion)
-            response_text: str = response.choices[0].message.content or ""
-            response_message: ChatMessage = {
-                "role": "assistant",
-                "content": response_text,
-            }
-            if response.choices[0].message.tool_calls:
-                response_message["tool_calls"] = response.choices[0].message.tool_calls  # type: ignore[assignment]
-
-            rollout.append(response_message)
-            completion.append(response_message)
-
-            state["turn"] += 1
-
-            # Always process the submission before checking termination.
-            # This ensures code in the final turn or alongside <submit/> is scored.
-            has_code = _extract_code(response_text) is not None
-            at_limit = state["turn"] >= self.max_turns
-            wants_submit = _has_submit(response_text)
-
-            if has_code or (not at_limit and not wants_submit):
-                env_msgs, state = await self._async_env_response(rollout, state)
-                assert isinstance(env_msgs, list)
-                rollout += env_msgs
-                completion += env_msgs
-
-            if wants_submit or at_limit:
-                state["submitted"] = state["submitted"] or wants_submit
-                is_completed = True
-
-        state["completion"] = completion
-        return completion, state
-
-    def env_response(
-        self, messages: Messages, state: State, **_kwargs: Any
-    ) -> tuple[Messages, State]:
-        """Sync stub required by MultiTurnEnv ABC.
-
-        Not called in practice — our rollout() override uses _async_env_response.
-        """
-        raise NotImplementedError(
-            "PerfOptimizeEnv.env_response() is not callable synchronously. "
-            "Use rollout() which calls _async_env_response() instead."
-        )
+        return [{"role": "user", "content": feedback}]

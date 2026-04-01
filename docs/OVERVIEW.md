@@ -50,11 +50,11 @@ paths, timeouts, resource limits, CPU pinning, perf counter selection, and varia
 thresholds.
 
 ### Verifiers Environment (`src/perf_optimize/env.py`)
-`PerfOptimizeEnv(MultiTurnEnv)` — the main environment class. Manages the multi-turn
-rollout loop where the LLM submits optimized code via `<code>` tags, receives
-compilation/test/perf feedback, and optionally submits via `<submit/>`. Overrides
-`rollout()` to support async sandbox calls. Entry point: `load_environment()` in
-`__init__.py`.
+`PerfOptimizeEnv(MultiTurnEnv)` — the main environment class. Implements the verifiers
+`env_response()` hook to process each model turn: extract code from `<code>` tags,
+compile/test/measure via the sandbox, and return structured perf feedback. Terminates
+via `final_env_response` on `<submit/>` or max turns. Entry point: `load_environment()`
+in `__init__.py`.
 
 ### Reward (`src/perf_optimize/reward.py`)
 Pure functions for reward computation. `correctness_gate` penalizes agents that never
@@ -105,18 +105,21 @@ load_environment(language, max_turns)
        ├─ Rubric(correctness_gate, perf_reward)
        │
        ▼
-   PerfOptimizeEnv.rollout(client, model, prompt, ...)
+   MultiTurnEnv.rollout(input, client, model, sampling_args)
        │
+       ├─ init_state() ──► framework state with client, model, trajectory
        ├─ setup_state() ──► decode base64 test data, init tracking
        │
-       └─ LOOP (max_turns):
-            ├─ model generates code in <code>...</code>
-            ├─ _async_env_response():
-            │    ├─ extract code
+       └─ LOOP (framework-managed):
+            ├─ get_prompt_messages() ──► calls env_response() for turn > 0
+            │    env_response():
+            │    ├─ extract code from <code>...</code>
             │    ├─ await sandbox.compile_and_run()
-            │    └─ format feedback (compile error / test fail / perf results)
-            ├─ check is_completed (<submit/> or max turns)
-            └─ return (completion, state)
+            │    ├─ format feedback (compile error / test fail / perf results)
+            │    └─ set final_env_response on <submit/> or max turns
+            ├─ get_model_response() ──► model generates next response
+            ├─ add_model_response() ──► append to trajectory
+            └─ is_completed() ──► check has_final_env_response / errors
 ```
 
 ## Features Index

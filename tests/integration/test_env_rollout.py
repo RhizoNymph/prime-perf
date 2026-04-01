@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 import pytest
+from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice, ChatCompletionMessage
 
 verifiers = pytest.importorskip("verifiers", reason="verifiers SDK not installed")
 
@@ -79,13 +81,36 @@ int main() {
     return problems
 
 
-def _mock_chat_completion(content: str) -> MagicMock:
-    """Create a mock ChatCompletion response."""
-    mock = MagicMock()
-    mock.choices = [MagicMock()]
-    mock.choices[0].message.content = content
-    mock.choices[0].message.tool_calls = None
-    return mock
+def _mock_chat_completion(content: str) -> ChatCompletion:
+    """Create a real ChatCompletion for use with the verifiers framework."""
+    return ChatCompletion(
+        id="test",
+        choices=[
+            Choice(
+                finish_reason="stop",
+                index=0,
+                message=ChatCompletionMessage(
+                    role="assistant",
+                    content=content,
+                ),
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+
+
+def _rollout_input(env: PerfOptimizeEnv, idx: int = 0) -> dict:
+    """Build a RolloutInput dict from the env's dataset row."""
+    row = env.dataset[idx]
+    return {
+        "prompt": row["prompt"],
+        "example_id": row["example_id"],
+        "task": row["task"],
+        "answer": row.get("answer", ""),
+        "info": row["info"],
+    }
 
 
 @pytest.mark.integration
@@ -120,19 +145,8 @@ int main() {
     ]
     mock_client.chat.completions.create = AsyncMock(side_effect=responses)
 
-    # Get the first (and only) problem's prompt
-    dataset = env.dataset
-    prompt = dataset[0]["prompt"]
-    answer = dataset[0]["answer"]
-    info = dataset[0]["info"]
-
-    completion, state = await env.rollout(
-        client=mock_client,
-        model="test-model",
-        prompt=prompt,
-        answer=answer,
-        info=info,
-    )
+    rollout_input = _rollout_input(env)
+    state = await env.rollout(rollout_input, mock_client, "test-model")
 
     # Verify state tracking
     assert state["correct_submissions"] >= 1
@@ -142,7 +156,8 @@ int main() {
     assert "cycles" in state["best_perf_dict"]
 
     # Completion should have messages
-    assert len(completion) > 0
+    assert state["completion"] is not None
+    assert len(state["completion"]) > 0
 
 
 @pytest.mark.integration
@@ -177,16 +192,8 @@ int main() {
     ]
     mock_client.chat.completions.create = AsyncMock(side_effect=responses)
 
-    dataset = env.dataset
-    prompt = dataset[0]["prompt"]
-
-    _completion, state = await env.rollout(
-        client=mock_client,
-        model="test-model",
-        prompt=prompt,
-        answer=dataset[0]["answer"],
-        info=dataset[0]["info"],
-    )
+    rollout_input = _rollout_input(env)
+    state = await env.rollout(rollout_input, mock_client, "test-model")
 
     assert state["compile_failures"] == 1
     assert state["correct_submissions"] >= 1

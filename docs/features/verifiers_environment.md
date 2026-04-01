@@ -27,39 +27,39 @@ load_environment(language, max_turns, problems_dir, problems)
     └─ super().__init__(dataset, system_prompt, rubric, max_turns)
         └─ format_dataset() wraps "question" → "prompt" messages
 
-PerfOptimizeEnv.rollout(client, model, prompt, answer, info)
+MultiTurnEnv.rollout(input, client, model, sampling_args)  [framework @final]
 │
-├─ setup_state(state)
+├─ init_state(input, client, model, sampling_args)
+│   └─ creates State with client, model, trajectory=[], timing, etc.
+├─ setup_state(state)  [PerfOptimizeEnv override]
 │   ├─ decode base64: test_inputs, expected_outputs, perf_input
 │   └─ init: best_perf_dict=None, submitted=False, counters=0
 │
-└─ LOOP while not is_completed and turn < max_turns:
+└─ LOOP while not is_completed(state):  [framework-managed]
     │
-    ├─ get_model_response() → assistant message
-    ├─ state["turn"] += 1
+    ├─ get_prompt_messages(state)  [framework]
+    │   ├─ turn 0: returns state["prompt"]
+    │   └─ turn N>0: calls env_response(prev_messages, state)
     │
-    ├─ is_completed? (state["submitted"] or <submit/> in message)
-    │   └─ if True: BREAK
+    ├─ env_response(messages, state)  [PerfOptimizeEnv override]
+    │   │
+    │   ├─ _extract_code(content) → source code or None
+    │   │   └─ if None: format_no_code_found()
+    │   │
+    │   ├─ await _process_turn(content, state, turn, max_turns)
+    │   │   ├─ await sandbox.compile_and_run(code, tests, perf_input)
+    │   │   ├─ CompilationFailure? → compile_failures++, format_compile_error
+    │   │   ├─ Tests failed? → test_failures++, format_test_failure
+    │   │   └─ Tests passed → correct_submissions++, update best_perf_dict,
+    │   │                      format_perf_feedback
+    │   │
+    │   └─ if <submit/> or at max turns:
+    │       ├─ state["submitted"] = True
+    │       └─ state["final_env_response"] = feedback_msgs
     │
-    └─ await _async_env_response(messages, state)
-        │
-        ├─ _extract_code(content) → source code or None
-        │   └─ if None: format_no_code_found()
-        │
-        ├─ await sandbox.compile_and_run(code, tests, perf_input)
-        │
-        ├─ CompilationFailure?
-        │   ├─ state["compile_failures"] += 1
-        │   └─ format_compile_error(stderr)
-        │
-        ├─ Tests failed?
-        │   ├─ state["test_failures"] += 1
-        │   └─ format_test_failure(passed, total, errors)
-        │
-        └─ Tests passed:
-            ├─ state["correct_submissions"] += 1
-            ├─ update best_perf_dict if better
-            └─ format_perf_feedback(agent_counters, ref_counters)
+    ├─ if final_env_response set: skip model call, loop to is_completed
+    ├─ get_model_response(state, prompt_messages)  [framework]
+    └─ add_model_response(state, prompt, response)  [framework]
 ```
 
 ## Files and Key Exports
@@ -77,10 +77,13 @@ PerfOptimizeEnv.rollout(client, model, prompt, answer, info)
   returns 0.0 for them, degrading to correctness-only training.
 - `<submit/>` must appear on its own line (with optional whitespace) to trigger episode
   termination. Inline mentions in prose or inside `<code>` blocks are ignored.
-- `env_response()` is sync (ABC requirement) but raises `NotImplementedError` — the
-  async `_async_env_response()` is called from the overridden `rollout()` instead.
-- `rollout()` is a copy of `MultiTurnEnv.rollout()` with one change: `await
-  self._async_env_response()` replaces `self.env_response()`.
+- `env_response()` is async, called by the framework's `get_prompt_messages()` after
+  each model turn. It returns `Messages` (feedback) and mutates state in-place.
+- `max_turns_reached` stop condition is overridden to return `False` — termination is
+  handled in `env_response()` via `state["final_env_response"]` to ensure the last
+  model response is always compiled/tested/measured before the rubric scores.
+- The framework's `@final rollout()` is not overridden; the standard `MultiTurnEnv`
+  loop manages the turn cycle.
 - Only chat message format is supported (`message_type="chat"`).
 - Code is extracted via regex `<code(?:\s+lang="[^"]*")?>\s*(.*?)\s*</code>` — not
   using `XMLParser` because our tag has attributes.
