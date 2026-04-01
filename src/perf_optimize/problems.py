@@ -80,8 +80,12 @@ def _load_test_files(tests_dir: Path) -> tuple[tuple[bytes, ...], tuple[bytes, .
         if not input_file.exists():
             break
         inputs.append(input_file.read_bytes())
-        if expected_file.exists():
-            outputs.append(expected_file.read_bytes())
+        if not expected_file.exists():
+            raise FileNotFoundError(
+                f"Missing expected output file: {expected_file} "
+                f"(input_{i}.bin exists but expected_{i}.bin does not)"
+            )
+        outputs.append(expected_file.read_bytes())
         i += 1
 
     return tuple(inputs), tuple(outputs)
