@@ -145,6 +145,19 @@ class TestLoadProblem:
         with pytest.raises(FileNotFoundError, match="Missing expected output file"):
             load_problem(d)
 
+    def test_tolerance_mode_missing_tolerance_raises(self, tmp_path: Path) -> None:
+        """comparison.json with mode=tolerance but no tolerance value should raise."""
+        d = tmp_path / "bad_tolerance"
+        d.mkdir()
+        (d / "spec.md").write_text("# Bad\n")
+        (d / "comparison.json").write_text(json.dumps({"mode": "tolerance"}))
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
+        with pytest.raises(ValueError, match="tolerance mode requires"):
+            load_problem(d)
+
 
 class TestLoadProblemWithReference:
     def test_loads_c_reference(self, problem_dir: Path) -> None:

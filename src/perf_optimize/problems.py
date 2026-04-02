@@ -61,6 +61,10 @@ def _load_comparison(problem_dir: Path) -> tuple[ComparisonMode, float | None]:
     data = json.loads(comp_file.read_text())
     mode = ComparisonMode(data["mode"])
     tolerance = data.get("tolerance")
+    if mode == ComparisonMode.TOLERANCE and tolerance is None:
+        raise ValueError(
+            "tolerance mode requires a 'tolerance' value in comparison.json"
+        )
     return mode, tolerance
 
 
