@@ -51,6 +51,22 @@ class TestExtractCode:
         assert 'printf("</code>");' in result
         assert "return 0;" in result
 
+    def test_multiple_code_blocks_takes_last(self) -> None:
+        """When multiple code blocks exist, the last one is extracted."""
+        text = '<code lang="c">int first() {}</code>\nHere is v2:\n<code lang="c">int second() {}</code>'
+        result = _extract_code(text)
+        assert result == "int second() {}"
+
+    def test_empty_code_block_returns_none(self) -> None:
+        """An empty code block returns None."""
+        text = "<code></code>"
+        assert _extract_code(text) is None
+
+    def test_whitespace_only_code_block_returns_none(self) -> None:
+        """A whitespace-only code block returns None."""
+        text = "<code>   </code>"
+        assert _extract_code(text) is None
+
 
 class TestHasSubmit:
     def test_submit_on_own_line(self) -> None:
@@ -82,6 +98,16 @@ class TestHasSubmit:
     def test_submit_after_code_block(self) -> None:
         text = '<code lang="c">int main() {}</code>\n<submit/>'
         assert _has_submit(text)
+
+    def test_submit_between_code_blocks_detected(self) -> None:
+        """A <submit/> between two code blocks is outside both and should match."""
+        text = "<code>x</code>\n<submit/>\n<code>y</code>"
+        assert _has_submit(text)
+
+    def test_submit_in_markdown_fence_does_not_match(self) -> None:
+        """A <submit/> inside a markdown fenced code block should not match."""
+        text = "Here is how to submit:\n```\n<submit/>\n```\nThat's it."
+        assert not _has_submit(text)
 
 
 class TestSetupState:

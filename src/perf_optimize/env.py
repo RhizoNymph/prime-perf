@@ -40,13 +40,19 @@ from .types import CompilationFailure
 
 logger = structlog.get_logger(__name__)
 
-# Regex to extract code from <code lang="...">...</code> blocks.
-# The lang attribute is optional.
-_CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*)\s*</code>", re.DOTALL)
+# For extraction: find opening tags
+_CODE_OPEN_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>")
+_CODE_CLOSE = "</code>"
+
+# For stripping in _has_submit: non-greedy to strip each block individually
+_CODE_STRIP_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>.*?</code>", re.DOTALL)
 
 # Regex to detect <submit/> tag as a standalone command (on its own line).
 # Prevents false positives from mentions in prose or inside <code> blocks.
 _SUBMIT_PATTERN = re.compile(r"^\s*<submit\s*/?>\s*$", re.MULTILINE)
+
+# Regex to strip markdown fenced code blocks before submit detection.
+_MARKDOWN_FENCE_PATTERN = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
 
 
 def _default_problems_dir() -> Path:
@@ -74,16 +80,28 @@ def _default_problems_dir() -> Path:
 
 
 def _extract_code(text: str) -> str | None:
-    """Extract code from <code>...</code> tags in model output."""
-    match = _CODE_PATTERN.search(text)
+    """Extract code from the last <code>...</code> block in model output."""
+    close_idx = text.rfind(_CODE_CLOSE)
+    if close_idx == -1:
+        return None
+
+    # Find the last opening tag before the closing tag
+    prefix = text[:close_idx]
+    match = None
+    for m in _CODE_OPEN_PATTERN.finditer(prefix):
+        match = m
+
     if match is None:
         return None
-    return match.group(1).strip()
+
+    result = text[match.end():close_idx].strip()
+    return result or None  # empty string -> None (Bug 14)
 
 
 def _has_submit(text: str) -> bool:
     """Check if the model output contains a <submit/> tag outside code blocks."""
-    stripped = _CODE_PATTERN.sub("", text)
+    stripped = _CODE_STRIP_PATTERN.sub("", text)
+    stripped = _MARKDOWN_FENCE_PATTERN.sub("", stripped)
     return _SUBMIT_PATTERN.search(stripped) is not None
 
 
