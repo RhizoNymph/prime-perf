@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import struct
 from enum import StrEnum
+from math import isinf
 
 
 class ComparisonMode(StrEnum):
@@ -82,6 +83,16 @@ def _compare_tolerance(actual: bytes, expected: bytes, tolerance: float) -> str 
             continue
         if a_nan != e_nan:
             return f"Float[{i}]: one is NaN, other is {a if e_nan else e}"
+
+        # Infinity: both must be infinite with same sign
+        a_inf, e_inf = isinf(a), isinf(e)
+        if a_inf or e_inf:
+            if a_inf and e_inf and (a > 0) == (e > 0):
+                continue
+            return (
+                f"float[{i}]: infinity mismatch — "
+                f"expected {e!r}, got {a!r}"
+            )
 
         # Handle exact zero
         if e == 0.0:
