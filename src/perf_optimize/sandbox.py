@@ -169,14 +169,18 @@ class PerfSandbox:
         Returns (result, work_dir_path).
         """
         work_dir = tempfile.mkdtemp(prefix="perf_opt_compile_")
-        work = Path(work_dir)
-        lang = self._config.language
+        try:
+            work = Path(work_dir)
+            lang = self._config.language
 
-        source_file = work / f"solution{lang.file_extension}"
-        source_file.write_text(source_code)
+            source_file = work / f"solution{lang.file_extension}"
+            source_file.write_text(source_code)
 
-        result = await self._compile(work_dir)
-        return result, work_dir
+            result = await self._compile(work_dir)
+            return result, work_dir
+        except Exception:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise
 
     # ── Internal pipeline ─────────────────────────────────────────────────
 
