@@ -74,6 +74,31 @@ class TestBuildBwrapCommand:
         assert "--unshare-pid" in cmd
         assert "--new-session" in cmd
         assert "--die-with-parent" in cmd
+        assert "--clearenv" in cmd
+
+    def test_clearenv_and_setenv(self) -> None:
+        cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)
+
+        # --clearenv must come before all --setenv entries
+        clearenv_idx = cmd.index("--clearenv")
+        setenv_indices = [i for i, v in enumerate(cmd) if v == "--setenv"]
+        assert all(
+            clearenv_idx < idx for idx in setenv_indices
+        ), "--clearenv must precede all --setenv entries"
+
+        # Verify the three expected --setenv triplets exist as contiguous subsequences
+        expected_triplets = [
+            ("--setenv", "PATH", "/usr/bin:/usr/local/bin"),
+            ("--setenv", "HOME", "/work"),
+            ("--setenv", "LC_ALL", "C"),
+        ]
+        for triplet in expected_triplets:
+            found = False
+            for i in setenv_indices:
+                if i + 2 < len(cmd) and (cmd[i], cmd[i + 1], cmd[i + 2]) == triplet:
+                    found = True
+                    break
+            assert found, f"--setenv triplet not found: {triplet}"
 
     def test_chdir_to_work(self) -> None:
         cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)

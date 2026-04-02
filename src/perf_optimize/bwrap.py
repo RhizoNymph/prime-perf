@@ -59,6 +59,12 @@ def build_bwrap_command(
     cmd.append("--new-session")
     cmd.append("--die-with-parent")
 
+    # Scrub host environment; set only what the sandbox needs
+    cmd.append("--clearenv")
+    cmd.extend(["--setenv", "PATH", "/usr/bin:/usr/local/bin"])
+    cmd.extend(["--setenv", "HOME", "/work"])
+    cmd.extend(["--setenv", "LC_ALL", "C"])
+
     # Working directory inside the sandbox
     cmd.extend(["--chdir", "/work"])
 
