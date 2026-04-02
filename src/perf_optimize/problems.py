@@ -92,6 +92,18 @@ def _load_test_files(tests_dir: Path) -> tuple[tuple[bytes, ...], tuple[bytes, .
         outputs.append(expected_file.read_bytes())
         i += 1
 
+    # Check for non-contiguous files (e.g., input_0, input_1, input_3 — missing input_2)
+    all_input_files = list(tests_dir.glob("input_*.bin"))
+    if len(all_input_files) > i:
+        extra = sorted(
+            f.name for f in all_input_files
+            if f.name not in {f"input_{j}.bin" for j in range(i)}
+        )
+        raise FileNotFoundError(
+            f"Non-contiguous test files in {tests_dir}: found {extra} "
+            f"beyond contiguous range input_0..input_{i - 1}"
+        )
+
     return tuple(inputs), tuple(outputs)
 
 

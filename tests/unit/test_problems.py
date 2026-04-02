@@ -158,6 +158,22 @@ class TestLoadProblem:
         with pytest.raises(ValueError, match="tolerance mode requires"):
             load_problem(d)
 
+    def test_non_contiguous_test_files_raises(self, tmp_path: Path) -> None:
+        """Skipping test file indices (e.g. 0, 2 without 1) should raise."""
+        d = tmp_path / "gap_tests"
+        d.mkdir()
+        (d / "spec.md").write_text("# Gap\n")
+        tests = d / "tests"
+        tests.mkdir()
+        # Create contiguous pair 0
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
+        # Skip 1, create pair 2
+        (tests / "input_2.bin").write_bytes(b"\x03")
+        (tests / "expected_2.bin").write_bytes(b"\x04")
+        with pytest.raises(FileNotFoundError, match="Non-contiguous"):
+            load_problem(d)
+
 
 class TestLoadProblemWithReference:
     def test_loads_c_reference(self, problem_dir: Path) -> None:
