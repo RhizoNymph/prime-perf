@@ -190,26 +190,3 @@ class TestSandboxErrorHandling:
         assert "Infrastructure error" in msg["content"]
         assert "bwrap failed to start" in msg["content"]
         assert "not a problem with your code" in msg["content"]
-
-
-class TestCheckSubmitted:
-    """_check_submitted only checks state['submitted'] — submit detection is in rollout."""
-
-    def test_submitted_state_returns_true(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
-
-        state = {"submitted": True}
-        assert PerfOptimizeEnv._check_submitted(None, state) is True  # type: ignore[arg-type]
-
-    def test_not_submitted_returns_false(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
-
-        state: dict = {"submitted": False}
-        # _check_submitted does NOT check message content — rollout handles that
-        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]
-
-    def test_missing_key_returns_false(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
-
-        state: dict = {}
-        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]

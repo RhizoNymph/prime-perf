@@ -198,14 +198,6 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         return state
 
-    def _check_submitted(self, state: State) -> bool:
-        """Check if the rollout should end.
-
-        Only checks the ``submitted`` flag. The rollout loop is responsible for
-        setting this flag *after* processing any code in the same message.
-        """
-        return state.get("submitted", False)
-
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         """Disabled — we handle max turns in env_response via final_env_response.
