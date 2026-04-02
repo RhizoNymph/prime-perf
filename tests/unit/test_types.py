@@ -55,7 +55,7 @@ class TestPerfCounters:
     def test_to_dict_keys_match_field_names(self) -> None:
         pc = _sample_counters()
         d = pc.to_dict()
-        assert set(d.keys()) == PERF_COUNTER_FIELDS
+        assert set(d.keys()) == set(PERF_COUNTER_FIELDS)
 
     def test_to_dict_values(self) -> None:
         pc = _sample_counters()

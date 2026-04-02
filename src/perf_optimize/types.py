@@ -12,7 +12,8 @@ from enum import StrEnum
 
 # All PerfCounters field names that correspond to hardware counters.
 # Used by HardwareProfile and the parser to validate field mappings.
-PERF_COUNTER_FIELDS: frozenset[str] = frozenset({
+# Ordered tuple for deterministic iteration (e.g. in to_dict(), prompt display).
+PERF_COUNTER_FIELDS: tuple[str, ...] = (
     "cycles",
     "instructions",
     "cache_references",
@@ -20,7 +21,7 @@ PERF_COUNTER_FIELDS: frozenset[str] = frozenset({
     "l1_dcache_load_misses",
     "llc_load_misses",
     "branch_misses",
-})
+)
 
 
 @dataclass(frozen=True, slots=True)
