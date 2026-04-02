@@ -80,8 +80,12 @@ def _load_test_files(tests_dir: Path) -> tuple[tuple[bytes, ...], tuple[bytes, .
         if not input_file.exists():
             break
         inputs.append(input_file.read_bytes())
-        if expected_file.exists():
-            outputs.append(expected_file.read_bytes())
+        if not expected_file.exists():
+            raise FileNotFoundError(
+                f"Missing expected output file: {expected_file} "
+                f"(input_{i}.bin exists but expected_{i}.bin does not)"
+            )
+        outputs.append(expected_file.read_bytes())
         i += 1
 
     return tuple(inputs), tuple(outputs)
@@ -126,6 +130,9 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
 
     tests_dir = problem_dir / "tests"
     test_inputs, expected_outputs = _load_test_files(tests_dir)
+    if not test_inputs:
+        msg = f"No test files found in {tests_dir} — at least one input_0.bin is required"
+        raise FileNotFoundError(msg)
 
     perf_input_file = problem_dir / "perf_input.bin"
     perf_input = perf_input_file.read_bytes() if perf_input_file.exists() else b""
@@ -253,8 +260,8 @@ def build_dataset_rows(
             info["reference_perf"] = problem.reference_perf.to_dict()
 
         rows.append({
-            "prompt": prompt,
-            "answer": None,
+            "question": prompt,
+            "answer": "",
             "info": info,
         })
 

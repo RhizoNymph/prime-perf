@@ -86,6 +86,8 @@ CompilationResult = CompilationSuccess | CompilationFailure
 class TestResult:
     """Result of a single test case execution."""
 
+    __test__ = False  # prevent pytest collection
+
     name: str
     passed: bool
     error: str | None = None
@@ -94,6 +96,8 @@ class TestResult:
 @dataclass(frozen=True, slots=True)
 class TestReport:
     """Aggregated results from running all test cases."""
+
+    __test__ = False  # prevent pytest collection
 
     results: tuple[TestResult, ...]
 

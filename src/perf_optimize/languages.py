@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 
@@ -106,7 +107,7 @@ TYPESCRIPT_LANG = LanguageConfig(
     file_extension=".ts",
     compiled=False,
     compiler_path="node",
-    compiler_flags=("--check",),
+    compiler_flags=("--experimental-strip-types", "--check"),
     output_file="solution.ts",
     runtime_path="node",
     runtime_flags=("--experimental-strip-types",),
@@ -197,7 +198,7 @@ def _resolve_node_ro_binds() -> tuple[str, ...]:
     return ()
 
 
-_RESOLVERS: dict[Language, callable] = {
+_RESOLVERS: dict[Language, Callable[[], tuple[str, ...]]] = {
     Language.RUST: _resolve_rust_ro_binds,
     Language.PYTHON: _resolve_python_ro_binds,
     Language.TYPESCRIPT: _resolve_node_ro_binds,

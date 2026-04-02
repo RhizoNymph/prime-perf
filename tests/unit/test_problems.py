@@ -119,9 +119,31 @@ class TestLoadProblem:
         d = tmp_path / "no_comp"
         d.mkdir()
         (d / "spec.md").write_text("# Minimal\n")
-        (d / "tests").mkdir()
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
         spec = load_problem(d)
         assert spec.comparison == ComparisonMode.EXACT
+
+    def test_empty_tests_dir_raises(self, tmp_path: Path) -> None:
+        d = tmp_path / "no_tests"
+        d.mkdir()
+        (d / "spec.md").write_text("# Empty\n")
+        (d / "tests").mkdir()
+        with pytest.raises(FileNotFoundError, match="No test files found"):
+            load_problem(d)
+
+    def test_missing_expected_output_raises(self, tmp_path: Path) -> None:
+        d = tmp_path / "mismatched"
+        d.mkdir()
+        (d / "spec.md").write_text("# Mismatched\n")
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        # No expected_0.bin
+        with pytest.raises(FileNotFoundError, match="Missing expected output file"):
+            load_problem(d)
 
 
 class TestLoadProblemWithReference:
@@ -153,10 +175,10 @@ class TestBuildDatasetRows:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
         assert len(rows) == 1
 
-    def test_row_has_prompt(self, problem_dir: Path) -> None:
+    def test_row_has_question(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
-        assert "Test Problem" in rows[0]["prompt"]
-        assert "int main" in rows[0]["prompt"]
+        assert "Test Problem" in rows[0]["question"]
+        assert "int main" in rows[0]["question"]
 
     def test_row_has_info(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
@@ -166,9 +188,9 @@ class TestBuildDatasetRows:
         assert info["comparison"] == "exact"
         assert len(info["test_inputs"]) == 2
 
-    def test_row_answer_is_none(self, problem_dir: Path) -> None:
+    def test_row_answer_is_empty_string(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
-        assert rows[0]["answer"] is None
+        assert rows[0]["answer"] == ""
 
     def test_row_has_reference_perf(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")

@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "structlog>=24.4.0",
+    "verifiers>=0.1.2",
+    "datasets>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +26,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/perf_optimize"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"problems" = "perf_optimize/problems"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -31,7 +36,7 @@ markers = [
     "variance: slow variance validation tests (deselect with '-m \"not variance\"')",
     "integration: requires bwrap + gcc + perf",
 ]
-addopts = "-m 'not variance'"
+addopts = "-m 'not variance and not integration'"
 
 [tool.ruff]
 target-version = "py313"

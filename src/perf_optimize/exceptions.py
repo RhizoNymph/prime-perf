@@ -112,21 +112,6 @@ class PerfMeasurementError(SandboxError):
         super().__init__(message)
 
 
-class CounterNotSupportedError(SandboxError):
-    """A profiled counter reported <not supported> by perf.
-
-    This indicates the HardwareProfile is wrong for this CPU -- a counter
-    was requested that the hardware does not provide.
-    """
-
-    def __init__(self, event: str) -> None:
-        self.event = event
-        super().__init__(
-            f"perf event '{event}' is <not supported> on this CPU. "
-            "The hardware profile may be wrong for this architecture."
-        )
-
-
 # ---------------------------------------------------------------------------
 # Perf output parsing
 # ---------------------------------------------------------------------------
@@ -154,3 +139,19 @@ class CounterNotCountedError(PerfParseError):
     def __init__(self, counter: str, raw_output: str = "") -> None:
         self.counter = counter
         super().__init__(f"Counter '{counter}' was <not counted> by perf", raw_output)
+
+
+class CounterNotSupportedError(PerfParseError):
+    """A profiled counter reported <not supported> by perf.
+
+    This indicates the HardwareProfile is wrong for this CPU -- a counter
+    was requested that the hardware does not provide.
+    """
+
+    def __init__(self, event: str, raw_output: str = "") -> None:
+        self.event = event
+        super().__init__(
+            f"perf event '{event}' is <not supported> on this CPU. "
+            "The hardware profile may be wrong for this architecture.",
+            raw_output,
+        )

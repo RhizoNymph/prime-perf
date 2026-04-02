@@ -16,16 +16,6 @@ class ComparisonMode(StrEnum):
     TOLERANCE = "tolerance"
 
 
-class OutputMismatchError:
-    """Structured description of an output comparison failure."""
-
-    def __init__(self, message: str) -> None:
-        self.message = message
-
-    def __str__(self) -> str:
-        return self.message
-
-
 def compare_outputs(
     actual: bytes,
     expected: bytes,
