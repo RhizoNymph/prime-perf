@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -148,6 +149,47 @@ class TestSetupState:
         assert result["compile_failures"] == 0
         assert result["test_failures"] == 0
         assert result["correct_submissions"] == 0
+
+
+class TestSandboxErrorHandling:
+    """_process_turn should catch SandboxError and return infrastructure error feedback."""
+
+    @pytest.mark.asyncio
+    async def test_bwrap_invocation_error_returns_feedback(self) -> None:
+        from perf_optimize.env import PerfOptimizeEnv
+        from perf_optimize.exceptions import BwrapInvocationError
+
+        state = {
+            "test_inputs": [b"input"],
+            "expected_outputs": [b"output"],
+            "perf_input": b"perf",
+            "comparison": "exact",
+            "tolerance": None,
+            "reference_perf": {"cycles": 1000.0},
+            "best_perf_dict": None,
+            "best_wall_clock_ms": None,
+            "submitted": False,
+            "compile_failures": 0,
+            "test_failures": 0,
+            "correct_submissions": 0,
+        }
+
+        content = '<code lang="c">int main() { return 0; }</code>'
+
+        env = PerfOptimizeEnv.__new__(PerfOptimizeEnv)
+        env._sandbox = AsyncMock()
+        env._sandbox.compile_and_run = AsyncMock(
+            side_effect=BwrapInvocationError("bwrap failed to start")
+        )
+
+        result = await env._process_turn(content, state, turn=1, max_turns=5)
+
+        assert len(result) == 1
+        msg = result[0]
+        assert msg["role"] == "user"
+        assert "Infrastructure error" in msg["content"]
+        assert "bwrap failed to start" in msg["content"]
+        assert "not a problem with your code" in msg["content"]
 
 
 class TestCheckSubmitted:

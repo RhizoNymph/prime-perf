@@ -24,6 +24,7 @@ from .exceptions import (
     CounterNotSupportedError,
     PerfMeasurementError,
     PerfParseError,
+    SandboxError,
 )
 from .languages import Language
 from .problems import build_dataset_rows
@@ -299,6 +300,14 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 perf_counters=None,
                 wall_clock_ms=None,
             )
+        except SandboxError as exc:
+            logger.warning("sandbox_infrastructure_error", error=str(exc))
+            feedback = (
+                f"**Infrastructure error** (turn {turn}/{max_turns})\n\n"
+                f"{exc}\n\n"
+                "This is not a problem with your code. Try again."
+            )
+            return [{"role": "user", "content": feedback}]
 
         # Handle compilation failure
         if isinstance(result.compilation, CompilationFailure):
