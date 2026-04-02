@@ -157,7 +157,7 @@ class TestBuildCompileCommand:
     def test_c_default_config(self) -> None:
         config = SandboxConfig()  # default language is C
         cmd = build_compile_command(config, "solution.c", "solution")
-        assert cmd == ["gcc", "-O2", "-lm", "-o", "solution", "solution.c"]
+        assert cmd == ["gcc", "-O2", "-o", "solution", "solution.c", "-lm"]
 
     def test_rust_config(self) -> None:
         from perf_optimize.languages import Language, resolve_language_config
@@ -185,10 +185,20 @@ class TestBuildCompileCommand:
         o_idx = cmd.index("-o")
         assert cmd[o_idx + 1] == "output_bin"
 
-    def test_source_file_is_last(self) -> None:
+    def test_source_file_before_linker_flags(self) -> None:
         config = SandboxConfig()
         cmd = build_compile_command(config, "main.c", "main")
-        assert cmd[-1] == "main.c"
+        # For C, source comes before linker flags: [..., main.c, -lm]
+        src_idx = cmd.index("main.c")
+        assert src_idx < len(cmd) - 1  # not last because -lm follows
+        assert cmd[-1] == "-lm"
+
+    def test_linker_flags_after_source(self) -> None:
+        config = SandboxConfig()  # default C has linker_flags=("-lm",)
+        cmd = build_compile_command(config, "solution.c", "solution")
+        src_idx = cmd.index("solution.c")
+        lm_idx = cmd.index("-lm")
+        assert lm_idx > src_idx, "-lm must come after source file"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

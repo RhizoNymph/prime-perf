@@ -95,7 +95,7 @@ def build_compile_command(config: SandboxConfig, source_file: str, output_file: 
     assert lang.compiler_path is not None
 
     if lang.compiled:
-        return [lang.compiler_path, *lang.compiler_flags, "-o", output_file, source_file]
+        return [lang.compiler_path, *lang.compiler_flags, "-o", output_file, source_file, *lang.linker_flags]
     # Interpreted: syntax check only (e.g., python3 -m py_compile solution.py)
     return [lang.compiler_path, *lang.compiler_flags, source_file]
 

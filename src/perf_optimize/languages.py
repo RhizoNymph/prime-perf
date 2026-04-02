@@ -43,6 +43,7 @@ class LanguageConfig:
     compiled: bool
     compiler_path: str | None
     compiler_flags: tuple[str, ...]
+    linker_flags: tuple[str, ...]
     output_file: str
 
     # Execution (for interpreted languages)
@@ -71,7 +72,8 @@ C_LANG = LanguageConfig(
     file_extension=".c",
     compiled=True,
     compiler_path="gcc",
-    compiler_flags=("-O2", "-lm"),
+    compiler_flags=("-O2",),
+    linker_flags=("-lm",),
     output_file="solution",
     runtime_path=None,
     runtime_flags=(),
@@ -84,6 +86,7 @@ RUST_LANG = LanguageConfig(
     compiled=True,
     compiler_path="rustc",
     compiler_flags=("-O", "--edition", "2024"),
+    linker_flags=(),
     output_file="solution",
     runtime_path=None,
     runtime_flags=(),
@@ -96,6 +99,7 @@ PYTHON_LANG = LanguageConfig(
     compiled=False,
     compiler_path="python3",
     compiler_flags=("-m", "py_compile"),
+    linker_flags=(),
     output_file="solution.py",
     runtime_path="python3",
     runtime_flags=(),
@@ -108,6 +112,7 @@ TYPESCRIPT_LANG = LanguageConfig(
     compiled=False,
     compiler_path="node",
     compiler_flags=("--experimental-strip-types", "--check"),
+    linker_flags=(),
     output_file="solution.ts",
     runtime_path="node",
     runtime_flags=("--experimental-strip-types",),
