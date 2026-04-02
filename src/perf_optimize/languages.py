@@ -155,7 +155,10 @@ def _resolve_python_ro_binds() -> tuple[str, ...]:
     """Find Python prefix and site-packages dirs to ro-bind.
 
     System python under /usr is already covered by the default ro-binds.
-    We need to bind /usr/local if site-packages live there (e.g., pip-installed numpy).
+    For non-system pythons (pyenv, conda, venv), we use ``sys.prefix`` to
+    discover the installation root, and only bind ``bin/`` and ``lib/``
+    subdirectories when the prefix is under the user's home (to avoid
+    exposing the entire home directory).
     """
     python = shutil.which("python3")
     if python is None:
@@ -164,11 +167,29 @@ def _resolve_python_ro_binds() -> tuple[str, ...]:
     binds: list[str] = []
     real_path = Path(python).resolve()
 
-    # If python lives outside /usr (e.g., pyenv, conda), bind its prefix
     if not str(real_path).startswith("/usr/"):
-        binds.append(str(real_path.parent.parent))
+        try:
+            result = subprocess.run(
+                [str(real_path), "-c", "import sys; print(sys.prefix)"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                prefix = result.stdout.strip()
+                if prefix and Path(prefix).exists():
+                    home = str(Path.home())
+                    if prefix.startswith(home):
+                        prefix_path = Path(prefix)
+                        for subdir in ("bin", "lib"):
+                            sub = prefix_path / subdir
+                            if sub.exists():
+                                binds.append(str(sub))
+                    else:
+                        binds.append(prefix)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
 
-    # Check if /usr/local has python packages (pip-installed)
     usr_local_lib = Path("/usr/local/lib")
     if usr_local_lib.exists():
         python_dirs = list(usr_local_lib.glob("python3*"))
