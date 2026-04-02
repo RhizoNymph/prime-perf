@@ -84,6 +84,31 @@ class TestPerfCounters:
         with pytest.raises((AttributeError, TypeError)):
             pc.extra_field = 42  # type: ignore[attr-defined]
 
+    def test_negative_cycles_raises(self) -> None:
+        with pytest.raises(ValueError, match="cycles must be non-negative"):
+            PerfCounters(cycles=-1.0, instructions=100.0)
+
+    def test_negative_instructions_raises(self) -> None:
+        with pytest.raises(ValueError, match="instructions must be non-negative"):
+            PerfCounters(cycles=100.0, instructions=-1.0)
+
+    def test_negative_optional_counter_raises(self) -> None:
+        with pytest.raises(ValueError, match="cache_misses must be non-negative"):
+            PerfCounters(cycles=100.0, instructions=200.0, cache_misses=-5.0)
+
+    def test_zero_counters_ok(self) -> None:
+        pc = PerfCounters(
+            cycles=0.0,
+            instructions=0.0,
+            cache_references=0.0,
+            cache_misses=0.0,
+            l1_dcache_load_misses=0.0,
+            llc_load_misses=0.0,
+            branch_misses=0.0,
+        )
+        assert pc.cycles == 0.0
+        assert pc.instructions == 0.0
+
 
 # ---------------------------------------------------------------------------
 # CompilationSuccess / CompilationFailure

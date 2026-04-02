@@ -43,6 +43,17 @@ class PerfCounters:
     llc_load_misses: float | None = None
     branch_misses: float | None = None
 
+    def __post_init__(self) -> None:
+        """Validate that counter values are non-negative."""
+        if self.cycles < 0:
+            raise ValueError(f"cycles must be non-negative, got {self.cycles}")
+        if self.instructions < 0:
+            raise ValueError(f"instructions must be non-negative, got {self.instructions}")
+        for field_name in ("cache_references", "cache_misses", "l1_dcache_load_misses", "llc_load_misses", "branch_misses"):
+            val = getattr(self, field_name)
+            if val is not None and val < 0:
+                raise ValueError(f"{field_name} must be non-negative, got {val}")
+
     @property
     def ipc(self) -> float:
         """Instructions per cycle. Returns 0.0 when cycles is zero."""
