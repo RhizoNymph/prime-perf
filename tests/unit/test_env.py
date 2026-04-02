@@ -43,6 +43,14 @@ class TestExtractCode:
         text = "<code>   int x = 1;   </code>"
         assert _extract_code(text) == "int x = 1;"
 
+    def test_literal_close_tag_in_source(self) -> None:
+        """Code containing literal </code> (e.g. printf) must not truncate."""
+        text = '<code lang="c">printf("</code>");\nreturn 0;</code>'
+        result = _extract_code(text)
+        assert result is not None
+        assert 'printf("</code>");' in result
+        assert "return 0;" in result
+
 
 class TestHasSubmit:
     def test_submit_on_own_line(self) -> None:

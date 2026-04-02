@@ -79,10 +79,14 @@ def format_perf_feedback(
     ref_counters: dict[str, float],
     turn: int,
     max_turns: int,
+    *,
+    rewarded_counters: set[str] | None = None,
 ) -> str:
     """Format performance counter feedback.
 
     Only shows counters that are present (not None) in both dicts.
+    When ``rewarded_counters`` is provided, only those counters are shown
+    so the agent sees feedback consistent with the actual reward signal.
     Shows improvement percentage relative to the reference.
     """
     lines = [
@@ -90,7 +94,11 @@ def format_perf_feedback(
         "",
     ]
 
-    for counter in sorted(agent_counters):
+    counters_to_show = sorted(agent_counters)
+    if rewarded_counters is not None:
+        counters_to_show = [c for c in counters_to_show if c in rewarded_counters]
+
+    for counter in counters_to_show:
         agent_val = agent_counters[counter]
         ref_val = ref_counters.get(counter)
         if ref_val is None or ref_val == 0:

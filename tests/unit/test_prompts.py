@@ -113,6 +113,25 @@ class TestFormatPerfFeedback:
         result = format_perf_feedback({"cycles": 100}, {"cycles": 200}, 1, 5)
         assert "<submit/>" in result
 
+    def test_filters_to_rewarded_counters(self) -> None:
+        """Only rewarded counters should appear when filter is provided."""
+        agent = {"cycles": 5_000, "instructions": 10_000, "cache_misses": 200}
+        ref = {"cycles": 10_000, "instructions": 8_000, "cache_misses": 400}
+        result = format_perf_feedback(
+            agent, ref, 1, 5, rewarded_counters={"cycles", "cache_misses"}
+        )
+        assert "cycles" in result
+        assert "cache_misses" in result
+        assert "instructions" not in result
+
+    def test_no_filter_shows_all_counters(self) -> None:
+        """Without filter, all counters should appear (backward compat)."""
+        agent = {"cycles": 5_000, "instructions": 10_000}
+        ref = {"cycles": 10_000, "instructions": 8_000}
+        result = format_perf_feedback(agent, ref, 1, 5)
+        assert "cycles" in result
+        assert "instructions" in result
+
 
 class TestFormatNoCodeFound:
     def test_contains_turn_info(self) -> None:

@@ -34,7 +34,7 @@ from .prompts import (
     format_system_prompt,
     format_test_failure,
 )
-from .reward import compute_weighted_improvement, correctness_gate, perf_reward
+from .reward import PERF_WEIGHT_MAP, compute_weighted_improvement, correctness_gate, perf_reward
 from .sandbox import PerfSandbox
 from .types import CompilationFailure
 
@@ -42,7 +42,7 @@ logger = structlog.get_logger(__name__)
 
 # Regex to extract code from <code lang="...">...</code> blocks.
 # The lang attribute is optional.
-_CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*?)\s*</code>", re.DOTALL)
+_CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*)\s*</code>", re.DOTALL)
 
 # Regex to detect <submit/> tag as a standalone command (on its own line).
 # Prevents false positives from mentions in prose or inside <code> blocks.
@@ -320,7 +320,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
                     state["best_perf_dict"] = agent_perf
                     state["best_wall_clock_ms"] = result.wall_clock_ms
 
-            feedback = format_perf_feedback(agent_perf, ref_perf, turn, max_turns)
+            feedback = format_perf_feedback(
+                agent_perf, ref_perf, turn, max_turns, rewarded_counters=set(PERF_WEIGHT_MAP)
+            )
         else:
             detail = f": {perf_error}" if perf_error else ""
             feedback = (
