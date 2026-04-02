@@ -120,6 +120,36 @@ class TestComputeWeightedImprovement:
         result_explicit = compute_weighted_improvement(ref, agent, weights=PERF_WEIGHT_MAP)
         assert result_default == result_explicit
 
+    def test_nan_ref_value_skipped(self) -> None:
+        """A NaN reference value should be skipped."""
+        ref = {"cycles": float("nan"), "branch_misses": 200}
+        agent = {"cycles": 500, "branch_misses": 100}
+        result = compute_weighted_improvement(ref, agent)
+        # Only branch_misses contributes, 50% improvement
+        assert result == pytest.approx(0.5)
+
+    def test_nan_agent_value_skipped(self) -> None:
+        """A NaN agent value should be skipped."""
+        ref = {"cycles": 1000, "branch_misses": 200}
+        agent = {"cycles": float("nan"), "branch_misses": 100}
+        result = compute_weighted_improvement(ref, agent)
+        # Only branch_misses contributes, 50% improvement
+        assert result == pytest.approx(0.5)
+
+    def test_inf_values_skipped(self) -> None:
+        """Infinite values (positive or negative) should be skipped."""
+        ref = {"cycles": float("inf"), "branch_misses": 200}
+        agent = {"cycles": 500, "branch_misses": 100}
+        result = compute_weighted_improvement(ref, agent)
+        # Only branch_misses contributes, 50% improvement
+        assert result == pytest.approx(0.5)
+
+        # Negative infinity in agent
+        ref2 = {"cycles": 1000, "branch_misses": 200}
+        agent2 = {"cycles": float("-inf"), "branch_misses": 100}
+        result2 = compute_weighted_improvement(ref2, agent2)
+        assert result2 == pytest.approx(0.5)
+
 
 # ── correctness_gate ─────────────────────────────────────────────────────────
 
