@@ -169,14 +169,18 @@ class PerfSandbox:
         Returns (result, work_dir_path).
         """
         work_dir = tempfile.mkdtemp(prefix="perf_opt_compile_")
-        work = Path(work_dir)
-        lang = self._config.language
+        try:
+            work = Path(work_dir)
+            lang = self._config.language
 
-        source_file = work / f"solution{lang.file_extension}"
-        source_file.write_text(source_code)
+            source_file = work / f"solution{lang.file_extension}"
+            source_file.write_text(source_code)
 
-        result = await self._compile(work_dir)
-        return result, work_dir
+            result = await self._compile(work_dir)
+            return result, work_dir
+        except Exception:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise
 
     # ── Internal pipeline ─────────────────────────────────────────────────
 
@@ -352,7 +356,9 @@ class PerfSandbox:
 
         # Read perf input from the work directory
         perf_input_path = Path(work_dir) / "perf_input.bin"
-        stdin_data = perf_input_path.read_bytes() if perf_input_path.exists() else b""
+        if not perf_input_path.exists():
+            raise PerfMeasurementError(f"perf input file not found: {perf_input_path}")
+        stdin_data = perf_input_path.read_bytes()
 
         try:
             returncode, _stdout, stderr = await self._run_subprocess(
