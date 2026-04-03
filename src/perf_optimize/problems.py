@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .comparison import ComparisonMode
-from .languages import Language
+from .languages import Language, resolve_language_config
 from .types import PerfCounters
 
 if TYPE_CHECKING:
@@ -179,13 +179,7 @@ def load_problem_with_reference(
     """
     spec = load_problem(problem_dir)
 
-    lang_config_map = {
-        Language.C: ".c",
-        Language.RUST: ".rs",
-        Language.PYTHON: ".py",
-        Language.TYPESCRIPT: ".ts",
-    }
-    ext = lang_config_map[language]
+    ext = resolve_language_config(language).file_extension
     ref_file = problem_dir / "reference" / f"solution{ext}"
     reference_source = ref_file.read_text()
 
