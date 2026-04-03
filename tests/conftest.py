@@ -5,11 +5,16 @@ from pathlib import Path
 
 import pytest
 
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "c_programs"
+FIXTURES_ROOT = Path(__file__).parent.parent / "fixtures"
+# Keep FIXTURES_DIR for backward compatibility (C-specific)
+FIXTURES_DIR = FIXTURES_ROOT / "c_programs"
 
 has_bwrap = shutil.which("bwrap") is not None
 has_gcc = shutil.which("gcc") is not None
 has_perf = shutil.which("perf") is not None
+has_rustc = shutil.which("rustc") is not None
+has_python3 = shutil.which("python3") is not None
+has_node = shutil.which("node") is not None
 
 
 def _perf_event_paranoid() -> int | None:
@@ -29,10 +34,18 @@ requires_perf_access = pytest.mark.skipif(
     not has_perf_access,
     reason=f"perf_event_paranoid={perf_paranoid} (needs <=1)",
 )
+requires_rustc = pytest.mark.skipif(not has_rustc, reason="rustc not installed")
+requires_python3 = pytest.mark.skipif(not has_python3, reason="python3 not installed")
+requires_node = pytest.mark.skipif(not has_node, reason="node not installed")
 requires_all_tools = pytest.mark.skipif(
     not (has_bwrap and has_gcc and has_perf and has_perf_access),
     reason="requires bwrap + gcc + perf with perf_event_paranoid<=1",
 )
+
+
+@pytest.fixture
+def fixtures_root() -> Path:
+    return FIXTURES_ROOT
 
 
 @pytest.fixture
