@@ -6,6 +6,7 @@ Supports exact binary match and tolerance-based float comparison.
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -14,6 +15,30 @@ class ComparisonMode(StrEnum):
 
     EXACT = "exact"
     TOLERANCE = "tolerance"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ComparisonConfig:
+    """Bundles comparison mode with its tolerance parameter.
+
+    Eliminates the repeated (mode, tolerance) parameter pair.
+    """
+
+    mode: ComparisonMode = ComparisonMode.EXACT
+    tolerance: float | None = None
+
+    def __eq__(self, other: object) -> bool:
+        """Support comparison with ComparisonMode and str for backward compatibility."""
+        if isinstance(other, ComparisonMode):
+            return self.mode == other
+        if isinstance(other, str):
+            return self.mode.value == other
+        if isinstance(other, ComparisonConfig):
+            return self.mode == other.mode and self.tolerance == other.tolerance
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash((self.mode, self.tolerance))
 
 
 def compare_outputs(

@@ -51,11 +51,12 @@ class PerfCounters:
 
     def to_dict(self) -> dict[str, float]:
         """Serialize to a dict keyed by field name, omitting None entries."""
+        from dataclasses import fields as dc_fields
         result: dict[str, float] = {}
-        for field_name in PERF_COUNTER_FIELDS:
-            val = getattr(self, field_name)
+        for f in dc_fields(self):
+            val = getattr(self, f.name)
             if val is not None:
-                result[field_name] = val
+                result[f.name] = val
         return result
 
 
@@ -124,7 +125,7 @@ class TestReport:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
-    """Full result of compiling, testing, and measuring a C program.
+    """Full result of compiling, testing, and measuring a program.
 
     Composes compilation, test, and perf counter results into a single
     immutable value. Fields are None when earlier stages failed:

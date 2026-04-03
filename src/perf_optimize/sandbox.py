@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from .bwrap import build_bwrap_command, build_compile_command, build_perf_command, build_run_command
-from .comparison import ComparisonMode, compare_outputs
+from .comparison import ComparisonConfig, compare_outputs
 from .exceptions import (
     BwrapInvocationError,
     BwrapNotFoundError,
@@ -107,8 +107,7 @@ class PerfSandbox:
         perf_input: bytes,
         *,
         test_names: list[str] | None = None,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> ExecutionResult:
         """Full pipeline: compile, test, measure.
 
@@ -118,8 +117,7 @@ class PerfSandbox:
             expected_outputs: Expected binary output for each test case.
             perf_input: Binary input for the performance measurement run.
             test_names: Optional names for each test case.
-            comparison: How to compare outputs (exact or tolerance-based).
-            tolerance: Relative tolerance for float comparison.
+            comparison: Comparison configuration (mode and optional tolerance).
 
         Returns:
             ExecutionResult with compilation, test, and perf counter data.
@@ -131,7 +129,7 @@ class PerfSandbox:
         try:
             return await self._run_pipeline(
                 source_code, test_inputs, expected_outputs, perf_input, test_names,
-                work_dir, comparison, tolerance,
+                work_dir, comparison,
             )
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -188,8 +186,7 @@ class PerfSandbox:
         perf_input: bytes,
         test_names: list[str],
         work_dir: str,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> ExecutionResult:
         work = Path(work_dir)
         lang = self._config.language
@@ -214,7 +211,7 @@ class PerfSandbox:
 
         # Step 2: Run tests
         test_report = await self._run_tests(
-            work_dir, test_inputs, expected_outputs, test_names, comparison, tolerance
+            work_dir, test_inputs, expected_outputs, test_names, comparison
         )
         if not test_report.all_passed:
             logger.info(
@@ -282,8 +279,7 @@ class PerfSandbox:
         test_inputs: list[bytes],
         expected_outputs: list[bytes],
         test_names: list[str],
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> TestReport:
         """Run correctness tests sequentially inside bwrap."""
         results: list[TestResult] = []
@@ -293,7 +289,7 @@ class PerfSandbox:
         ):
             try:
                 result = await self._run_single_test(
-                    work_dir, name, input_data, expected, comparison, tolerance
+                    work_dir, name, input_data, expected, comparison
                 )
             except TimeoutError:
                 result = TestResult(
@@ -311,8 +307,7 @@ class PerfSandbox:
         name: str,
         input_data: bytes,
         expected: bytes,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> TestResult:
         """Run one test case: feed input, compare output to expected."""
         inner_cmd = build_run_command(self._config)
@@ -339,7 +334,7 @@ class PerfSandbox:
         if not stdout_bytes:
             return TestResult(name=name, passed=False, error="No output produced")
 
-        mismatch = compare_outputs(stdout_bytes, expected, comparison, tolerance)
+        mismatch = compare_outputs(stdout_bytes, expected, comparison.mode, comparison.tolerance)
         if mismatch is not None:
             return TestResult(name=name, passed=False, error=mismatch)
 

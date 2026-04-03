@@ -165,8 +165,12 @@ class PerfOptimizeEnv(MultiTurnEnv):
         state["test_inputs"] = [base64.b64decode(t) for t in info["test_inputs"]]
         state["expected_outputs"] = [base64.b64decode(t) for t in info["expected_outputs"]]
         state["perf_input"] = base64.b64decode(info["perf_input"])
-        state["comparison"] = info["comparison"]
-        state["tolerance"] = info.get("tolerance")
+        from .comparison import ComparisonConfig, ComparisonMode
+
+        state["comparison"] = ComparisonConfig(
+            mode=ComparisonMode(info["comparison"]),
+            tolerance=info.get("tolerance"),
+        )
         state["reference_perf"] = info.get("reference_perf")
 
         # Tracking fields
@@ -250,8 +254,6 @@ class PerfOptimizeEnv(MultiTurnEnv):
             return [{"role": "user", "content": feedback}]
 
         # Run the full pipeline: compile → test → perf
-        from .comparison import ComparisonMode
-
         perf_error: str | None = None
         try:
             result = await self._sandbox.compile_and_run(
@@ -259,8 +261,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 test_inputs=state["test_inputs"],
                 expected_outputs=state["expected_outputs"],
                 perf_input=state["perf_input"],
-                comparison=ComparisonMode(state["comparison"]),
-                tolerance=state["tolerance"],
+                comparison=state["comparison"],
             )
         except (
             PerfMeasurementError,
