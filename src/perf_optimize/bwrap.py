@@ -59,6 +59,12 @@ def build_bwrap_command(
     cmd.append("--new-session")
     cmd.append("--die-with-parent")
 
+    # Scrub host environment; set only what the sandbox needs
+    cmd.append("--clearenv")
+    cmd.extend(["--setenv", "PATH", "/usr/bin:/usr/local/bin"])
+    cmd.extend(["--setenv", "HOME", "/work"])
+    cmd.extend(["--setenv", "LC_ALL", "C"])
+
     # Working directory inside the sandbox
     cmd.extend(["--chdir", "/work"])
 
@@ -95,7 +101,7 @@ def build_compile_command(config: SandboxConfig, source_file: str, output_file: 
     assert lang.compiler_path is not None
 
     if lang.compiled:
-        return [lang.compiler_path, *lang.compiler_flags, "-o", output_file, source_file]
+        return [lang.compiler_path, *lang.compiler_flags, "-o", output_file, source_file, *lang.linker_flags]
     # Interpreted: syntax check only (e.g., python3 -m py_compile solution.py)
     return [lang.compiler_path, *lang.compiler_flags, source_file]
 

@@ -92,3 +92,27 @@ class TestToleranceComparison:
         result = compare_outputs(data, data, ComparisonMode.TOLERANCE, None)
         assert result is not None
         assert "requires" in result.lower()
+
+    def test_both_pos_inf_is_ok(self) -> None:
+        inf = float("inf")
+        data = self._pack_floats(inf)
+        assert compare_outputs(data, data, ComparisonMode.TOLERANCE, 1e-5) is None
+
+    def test_both_neg_inf_is_ok(self) -> None:
+        neg_inf = float("-inf")
+        data = self._pack_floats(neg_inf)
+        assert compare_outputs(data, data, ComparisonMode.TOLERANCE, 1e-5) is None
+
+    def test_finite_vs_inf_is_mismatch(self) -> None:
+        actual = self._pack_floats(1.0)
+        expected = self._pack_floats(float("inf"))
+        result = compare_outputs(actual, expected, ComparisonMode.TOLERANCE, 1e-5)
+        assert result is not None
+        assert "infinity mismatch" in result
+
+    def test_pos_inf_vs_neg_inf_is_mismatch(self) -> None:
+        actual = self._pack_floats(float("inf"))
+        expected = self._pack_floats(float("-inf"))
+        result = compare_outputs(actual, expected, ComparisonMode.TOLERANCE, 1e-5)
+        assert result is not None
+        assert "infinity mismatch" in result

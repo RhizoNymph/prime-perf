@@ -43,6 +43,7 @@ class LanguageConfig:
     compiled: bool
     compiler_path: str | None
     compiler_flags: tuple[str, ...]
+    linker_flags: tuple[str, ...]
     output_file: str
 
     # Execution (for interpreted languages)
@@ -71,7 +72,8 @@ C_LANG = LanguageConfig(
     file_extension=".c",
     compiled=True,
     compiler_path="gcc",
-    compiler_flags=("-O2", "-lm"),
+    compiler_flags=("-O2",),
+    linker_flags=("-lm",),
     output_file="solution",
     runtime_path=None,
     runtime_flags=(),
@@ -84,6 +86,7 @@ RUST_LANG = LanguageConfig(
     compiled=True,
     compiler_path="rustc",
     compiler_flags=("-O", "--edition", "2024"),
+    linker_flags=(),
     output_file="solution",
     runtime_path=None,
     runtime_flags=(),
@@ -96,6 +99,7 @@ PYTHON_LANG = LanguageConfig(
     compiled=False,
     compiler_path="python3",
     compiler_flags=("-m", "py_compile"),
+    linker_flags=(),
     output_file="solution.py",
     runtime_path="python3",
     runtime_flags=(),
@@ -108,6 +112,7 @@ TYPESCRIPT_LANG = LanguageConfig(
     compiled=False,
     compiler_path="node",
     compiler_flags=("--experimental-strip-types", "--check"),
+    linker_flags=(),
     output_file="solution.ts",
     runtime_path="node",
     runtime_flags=("--experimental-strip-types",),
@@ -150,7 +155,10 @@ def _resolve_python_ro_binds() -> tuple[str, ...]:
     """Find Python prefix and site-packages dirs to ro-bind.
 
     System python under /usr is already covered by the default ro-binds.
-    We need to bind /usr/local if site-packages live there (e.g., pip-installed numpy).
+    For non-system pythons (pyenv, conda, venv), we use ``sys.prefix`` to
+    discover the installation root, and only bind ``bin/`` and ``lib/``
+    subdirectories when the prefix is under the user's home (to avoid
+    exposing the entire home directory).
     """
     python = shutil.which("python3")
     if python is None:
@@ -159,11 +167,29 @@ def _resolve_python_ro_binds() -> tuple[str, ...]:
     binds: list[str] = []
     real_path = Path(python).resolve()
 
-    # If python lives outside /usr (e.g., pyenv, conda), bind its prefix
     if not str(real_path).startswith("/usr/"):
-        binds.append(str(real_path.parent.parent))
+        try:
+            result = subprocess.run(
+                [str(real_path), "-c", "import sys; print(sys.prefix)"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                prefix = result.stdout.strip()
+                if prefix and Path(prefix).exists():
+                    home = str(Path.home())
+                    if prefix.startswith(home):
+                        prefix_path = Path(prefix)
+                        for subdir in ("bin", "lib"):
+                            sub = prefix_path / subdir
+                            if sub.exists():
+                                binds.append(str(sub))
+                    else:
+                        binds.append(prefix)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
 
-    # Check if /usr/local has python packages (pip-installed)
     usr_local_lib = Path("/usr/local/lib")
     if usr_local_lib.exists():
         python_dirs = list(usr_local_lib.glob("python3*"))
