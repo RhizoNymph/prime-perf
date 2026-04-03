@@ -16,7 +16,7 @@ import asyncio
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import structlog
 
@@ -154,9 +154,9 @@ class PerfSandbox:
         work_dir = tempfile.mkdtemp(prefix="perf_opt_measure_")
         try:
             work = Path(work_dir)
-            shutil.copy2(binary_path, work / "solution")
-            (work / "solution").chmod(0o755)
-            shutil.copy2(input_path, work / "perf_input.bin")
+            await asyncio.to_thread(shutil.copy2, binary_path, work / "solution")
+            await asyncio.to_thread((work / "solution").chmod, 0o755)
+            await asyncio.to_thread(shutil.copy2, input_path, work / "perf_input.bin")
 
             return await self._run_perf(work_dir)
         finally:
@@ -173,7 +173,7 @@ class PerfSandbox:
         lang = self._config.language
 
         source_file = work / f"solution{lang.file_extension}"
-        source_file.write_text(source_code)
+        await asyncio.to_thread(source_file.write_text, source_code)
 
         result = await self._compile(work_dir)
         return result, work_dir
@@ -196,10 +196,7 @@ class PerfSandbox:
 
         # Write source with correct extension
         source_file = work / f"solution{lang.file_extension}"
-        source_file.write_text(source_code)
-
-        # Write perf input
-        (work / "perf_input.bin").write_bytes(perf_input)
+        await asyncio.to_thread(source_file.write_text, source_code)
 
         # Step 1: Compile
         compilation = await self._compile(work_dir)
@@ -231,7 +228,7 @@ class PerfSandbox:
 
         # Step 3: Measure perf
         t0 = asyncio.get_event_loop().time()
-        perf_counters = await self._run_perf(work_dir)
+        perf_counters = await self._run_perf(work_dir, perf_input_data=perf_input)
         wall_clock_ms = (asyncio.get_event_loop().time() - t0) * 1000.0
         logger.info(
             "perf_measured",
@@ -285,24 +282,23 @@ class PerfSandbox:
         comparison: ComparisonMode = ComparisonMode.EXACT,
         tolerance: float | None = None,
     ) -> TestReport:
-        """Run correctness tests sequentially inside bwrap."""
+        """Run correctness tests concurrently inside bwrap."""
+        tasks = [
+            self._run_single_test(work_dir, name, inp, exp, comparison, tolerance)
+            for name, inp, exp in zip(test_names, test_inputs, expected_outputs, strict=True)
+        ]
+        settled = await asyncio.gather(*tasks, return_exceptions=True)
         results: list[TestResult] = []
-
-        for name, input_data, expected in zip(
-            test_names, test_inputs, expected_outputs, strict=True
-        ):
-            try:
-                result = await self._run_single_test(
-                    work_dir, name, input_data, expected, comparison, tolerance
-                )
-            except TimeoutError:
-                result = TestResult(
-                    name=name,
-                    passed=False,
+        for name, outcome in zip(test_names, settled):
+            if isinstance(outcome, TimeoutError):
+                results.append(TestResult(
+                    name=name, passed=False,
                     error=f"Test timed out after {self._config.test_timeout_s}s",
-                )
-            results.append(result)
-
+                ))
+            elif isinstance(outcome, BaseException):
+                results.append(TestResult(name=name, passed=False, error=str(outcome)))
+            else:
+                results.append(outcome)
         return TestReport(results=tuple(results))
 
     async def _run_single_test(
@@ -345,14 +341,17 @@ class PerfSandbox:
 
         return TestResult(name=name, passed=True)
 
-    async def _run_perf(self, work_dir: str) -> PerfCounters:
+    async def _run_perf(self, work_dir: str, *, perf_input_data: bytes | None = None) -> PerfCounters:
         """Run perf stat on the solution with perf_input.bin as stdin."""
         perf_cmd = build_perf_command(self._config)
         bwrap_cmd = build_bwrap_command(self._config, work_dir, perf_cmd)
 
-        # Read perf input from the work directory
-        perf_input_path = Path(work_dir) / "perf_input.bin"
-        stdin_data = perf_input_path.read_bytes() if perf_input_path.exists() else b""
+        # Use provided data directly, or fall back to reading from disk (measure_only)
+        if perf_input_data is not None:
+            stdin_data = perf_input_data
+        else:
+            perf_input_path = Path(work_dir) / "perf_input.bin"
+            stdin_data = await asyncio.to_thread(perf_input_path.read_bytes) if perf_input_path.exists() else b""
 
         try:
             returncode, _stdout, stderr = await self._run_subprocess(
@@ -376,11 +375,32 @@ class PerfSandbox:
         # perf stat writes CSV to stderr
         return parse_perf_output(stderr, self._config.hardware_profile)
 
+    @overload
     async def _run_subprocess(
         self,
         cmd: list[str],
         timeout: float,
         stdin_data: bytes | None = None,
+        *,
+        capture_stdout_bytes: Literal[True],
+    ) -> tuple[int, bytes, str]: ...
+
+    @overload
+    async def _run_subprocess(
+        self,
+        cmd: list[str],
+        timeout: float,
+        stdin_data: bytes | None = None,
+        *,
+        capture_stdout_bytes: Literal[False] = False,
+    ) -> tuple[int, str, str]: ...
+
+    async def _run_subprocess(
+        self,
+        cmd: list[str],
+        timeout: float,
+        stdin_data: bytes | None = None,
+        *,
         capture_stdout_bytes: bool = False,
     ) -> tuple[int, bytes | str, str]:
         """Run a subprocess with timeout.
