@@ -85,26 +85,6 @@ class BwrapInvocationError(SandboxError):
         super().__init__(message)
 
 
-class CompilationTimeoutError(SandboxError):
-    """Compilation exceeded the configured timeout."""
-
-    def __init__(self, timeout_s: float | None = None) -> None:
-        msg = "Compilation timed out"
-        if timeout_s is not None:
-            msg += f" after {timeout_s}s"
-        super().__init__(msg)
-
-
-class TestTimeoutError(SandboxError):
-    """Test execution exceeded the configured timeout."""
-
-    def __init__(self, timeout_s: float | None = None) -> None:
-        msg = "Test execution timed out"
-        if timeout_s is not None:
-            msg += f" after {timeout_s}s"
-        super().__init__(msg)
-
-
 class PerfMeasurementError(SandboxError):
     """perf stat measurement failed during execution."""
 
