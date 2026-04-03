@@ -47,11 +47,13 @@ MultiTurnEnv.rollout(input, client, model, sampling_args)  [framework @final]
     │   │   └─ if None: format_no_code_found()
     │   │
     │   ├─ await _process_turn(content, state, turn, max_turns)
-    │   │   ├─ await sandbox.compile_and_run(code, tests, perf_input)
-    │   │   ├─ CompilationFailure? → compile_failures++, format_compile_error
-    │   │   ├─ Tests failed? → test_failures++, format_test_failure
-    │   │   └─ Tests passed → correct_submissions++, update best_perf_dict,
-    │   │                      format_perf_feedback
+    │   │   ├─ delegates to TurnProcessor.process() (processor.py)
+    │   │   │   ├─ await sandbox.compile_and_run(code, tests, perf_input)
+    │   │   │   ├─ CompilationFailure? → TurnOutcome(compile_failures_delta=1)
+    │   │   │   ├─ Tests failed? → TurnOutcome(test_failures_delta=1)
+    │   │   │   └─ Tests passed → TurnOutcome(correct_submissions_delta=1,
+    │   │   │                      best_perf_dict, format_perf_feedback)
+    │   │   └─ applies state_updates from TurnOutcome (_delta suffix = increment)
     │   │
     │   └─ if <submit/> or at max turns:
     │       ├─ state["submitted"] = True
@@ -66,7 +68,8 @@ MultiTurnEnv.rollout(input, client, model, sampling_args)  [framework @final]
 
 | File | Role | Key Exports |
 |------|------|-------------|
-| `src/perf_optimize/env.py` | Environment class | `PerfOptimizeEnv`, `_extract_code`, `_has_submit` |
+| `src/perf_optimize/env.py` | Environment class | `PerfOptimizeEnv`, `PerfOptimizeState`, `_extract_code`, `_has_submit` |
+| `src/perf_optimize/processor.py` | Turn processing logic | `TurnProcessor`, `TurnOutcome`, `_REWARDED_COUNTERS` |
 | `src/perf_optimize/reward.py` | Reward functions | `compute_weighted_improvement`, `correctness_gate`, `perf_reward`, `PERF_WEIGHT_MAP` |
 | `src/perf_optimize/prompts.py` | Feedback formatters | `format_system_prompt`, `format_compile_error`, `format_test_failure`, `format_perf_feedback`, `format_no_code_found` |
 | `src/perf_optimize/__init__.py` | Entry point | `load_environment()` |
