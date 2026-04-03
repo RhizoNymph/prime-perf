@@ -10,6 +10,7 @@ import pytest
 from perf_optimize.comparison import ComparisonMode
 from perf_optimize.languages import Language
 from perf_optimize.problems import (
+    _format_prompt,
     build_dataset_rows,
     load_problem,
     load_problem_with_reference,
@@ -145,6 +146,35 @@ class TestLoadProblem:
         with pytest.raises(FileNotFoundError, match="Missing expected output file"):
             load_problem(d)
 
+    def test_tolerance_mode_missing_tolerance_raises(self, tmp_path: Path) -> None:
+        """comparison.json with mode=tolerance but no tolerance value should raise."""
+        d = tmp_path / "bad_tolerance"
+        d.mkdir()
+        (d / "spec.md").write_text("# Bad\n")
+        (d / "comparison.json").write_text(json.dumps({"mode": "tolerance"}))
+        tests = d / "tests"
+        tests.mkdir()
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
+        with pytest.raises(ValueError, match="tolerance mode requires"):
+            load_problem(d)
+
+    def test_non_contiguous_test_files_raises(self, tmp_path: Path) -> None:
+        """Skipping test file indices (e.g. 0, 2 without 1) should raise."""
+        d = tmp_path / "gap_tests"
+        d.mkdir()
+        (d / "spec.md").write_text("# Gap\n")
+        tests = d / "tests"
+        tests.mkdir()
+        # Create contiguous pair 0
+        (tests / "input_0.bin").write_bytes(b"\x01")
+        (tests / "expected_0.bin").write_bytes(b"\x02")
+        # Skip 1, create pair 2
+        (tests / "input_2.bin").write_bytes(b"\x03")
+        (tests / "expected_2.bin").write_bytes(b"\x04")
+        with pytest.raises(FileNotFoundError, match="Non-contiguous"):
+            load_problem(d)
+
 
 class TestLoadProblemWithReference:
     def test_loads_c_reference(self, problem_dir: Path) -> None:
@@ -196,3 +226,31 @@ class TestBuildDatasetRows:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
         perf = rows[0]["info"]["reference_perf"]
         assert perf["cycles"] == 1000000.0
+
+
+class TestFormatPromptFiltering:
+    def test_format_prompt_filters_counters(self, problem_dir: Path) -> None:
+        """When rewarded_counters is passed, only those counters appear in the prompt."""
+        problem = load_problem_with_reference(problem_dir, Language.C, "amd_zen")
+        # The reference perf has cycles, instructions, cache_misses,
+        # l1_dcache_load_misses, branch_misses
+        prompt_all = _format_prompt(problem)
+        prompt_filtered = _format_prompt(problem, rewarded_counters={"cycles", "instructions"})
+
+        # All counters appear in unfiltered prompt
+        assert "cycles" in prompt_all
+        assert "instructions" in prompt_all
+        assert "cache_misses" in prompt_all
+
+        # Only rewarded counters appear in filtered prompt
+        assert "cycles" in prompt_filtered
+        assert "instructions" in prompt_filtered
+        assert "cache_misses" not in prompt_filtered
+        assert "branch_misses" not in prompt_filtered
+
+    def test_format_prompt_none_shows_all(self, problem_dir: Path) -> None:
+        """When rewarded_counters is None, all counters appear."""
+        problem = load_problem_with_reference(problem_dir, Language.C, "amd_zen")
+        prompt = _format_prompt(problem, rewarded_counters=None)
+        assert "cycles" in prompt
+        assert "cache_misses" in prompt

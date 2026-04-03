@@ -13,6 +13,8 @@ The variance field (when present) contains a percentage with a ``%`` suffix.
 
 from __future__ import annotations
 
+import re
+import warnings
 from typing import TYPE_CHECKING
 
 from perf_optimize.exceptions import (
@@ -24,6 +26,8 @@ from perf_optimize.types import PerfCounters, PerfCSVLine
 
 if TYPE_CHECKING:
     from perf_optimize.counters import HardwareProfile
+
+_LOCALE_NUMBER_RE = re.compile(r"^\d{1,3}(,\d{3})+$")
 
 
 def parse_csv_line(line: str) -> PerfCSVLine | str | None:
@@ -61,6 +65,15 @@ def parse_csv_line(line: str) -> PerfCSVLine | str | None:
 
     # Skip textual derived metrics like "insn per cycle"
     if " " in event_name:
+        return None
+
+    # Detect locale-formatted numbers (e.g. "1,234,567") and warn
+    if _LOCALE_NUMBER_RE.match(raw_value):
+        warnings.warn(
+            f"Counter value {raw_value!r} appears locale-formatted; "
+            "ensure LC_ALL=C when running perf stat",
+            stacklevel=2,
+        )
         return None
 
     # Parse counter value (must be integer for hardware counters)
@@ -142,13 +155,13 @@ def parse_perf_output(csv_text: str, profile: HardwareProfile) -> PerfCounters:
         if result == "not_supported":
             event = _extract_event_name(line)
             if event in expected_events:
-                raise CounterNotSupportedError(event)
+                raise CounterNotSupportedError(event, raw_output=csv_text)
             continue
 
         if result == "not_counted":
             event = _extract_event_name(line)
             if event in expected_events:
-                raise CounterNotCountedError(counter=event)
+                raise CounterNotCountedError(counter=event, raw_output=csv_text)
             continue
 
         # It's a PerfCSVLine
@@ -159,7 +172,7 @@ def parse_perf_output(csv_text: str, profile: HardwareProfile) -> PerfCounters:
     # Mandatory counters
     for required in ("cycles", "instructions"):
         if required not in collected:
-            raise CounterNotFoundError(required)
+            raise CounterNotFoundError(required, raw_output=csv_text)
 
     return PerfCounters(
         cycles=collected["cycles"],
