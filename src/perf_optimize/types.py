@@ -12,7 +12,8 @@ from enum import StrEnum
 
 # All PerfCounters field names that correspond to hardware counters.
 # Used by HardwareProfile and the parser to validate field mappings.
-PERF_COUNTER_FIELDS: frozenset[str] = frozenset({
+# Ordered tuple for deterministic iteration (e.g. in to_dict(), prompt display).
+PERF_COUNTER_FIELDS: tuple[str, ...] = (
     "cycles",
     "instructions",
     "cache_references",
@@ -20,7 +21,7 @@ PERF_COUNTER_FIELDS: frozenset[str] = frozenset({
     "l1_dcache_load_misses",
     "llc_load_misses",
     "branch_misses",
-})
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,17 @@ class PerfCounters:
     l1_dcache_load_misses: float | None = None
     llc_load_misses: float | None = None
     branch_misses: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate that counter values are non-negative."""
+        if self.cycles < 0:
+            raise ValueError(f"cycles must be non-negative, got {self.cycles}")
+        if self.instructions < 0:
+            raise ValueError(f"instructions must be non-negative, got {self.instructions}")
+        for field_name in ("cache_references", "cache_misses", "l1_dcache_load_misses", "llc_load_misses", "branch_misses"):
+            val = getattr(self, field_name)
+            if val is not None and val < 0:
+                raise ValueError(f"{field_name} must be non-negative, got {val}")
 
     @property
     def ipc(self) -> float:

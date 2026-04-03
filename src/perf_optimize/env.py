@@ -21,13 +21,9 @@ from .config import SandboxConfig
 from .languages import Language
 from .problems import build_dataset_rows
 from .processor import TurnProcessor
-from .prompts import (
-    format_no_code_found,
-    format_system_prompt,
-)
+from .prompts import format_system_prompt
 from .reward import correctness_gate, perf_reward
 from .sandbox import PerfSandbox
-from .types import CompilationFailure
 
 logger = structlog.get_logger(__name__)
 
@@ -49,15 +45,19 @@ class PerfOptimizeState(TypedDict):
     correct_submissions: int
 
 
-# Greedy match: .* with re.DOTALL matches from the first <code> to the LAST </code>.
-# This is intentional — it correctly captures source code containing literal </code> strings.
-# Regex to extract code from <code lang="...">...</code> blocks.
-# The lang attribute is optional.
-_CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*)\s*</code>", re.DOTALL)
+# For extraction: find opening tags
+_CODE_OPEN_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>")
+_CODE_CLOSE = "</code>"
+
+# For stripping in _has_submit: non-greedy to strip each block individually
+_CODE_STRIP_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>.*?</code>", re.DOTALL)
 
 # Regex to detect <submit/> tag as a standalone command (on its own line).
 # Prevents false positives from mentions in prose or inside <code> blocks.
 _SUBMIT_PATTERN = re.compile(r"^\s*<submit\s*/?>\s*$", re.MULTILINE)
+
+# Regex to strip markdown fenced code blocks before submit detection.
+_MARKDOWN_FENCE_PATTERN = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
 
 
 def _default_problems_dir() -> Path:
@@ -85,16 +85,28 @@ def _default_problems_dir() -> Path:
 
 
 def _extract_code(text: str) -> str | None:
-    """Extract code from <code>...</code> tags in model output."""
-    match = _CODE_PATTERN.search(text)
+    """Extract code from the last <code>...</code> block in model output."""
+    close_idx = text.rfind(_CODE_CLOSE)
+    if close_idx == -1:
+        return None
+
+    # Find the last opening tag before the closing tag
+    prefix = text[:close_idx]
+    match = None
+    for m in _CODE_OPEN_PATTERN.finditer(prefix):
+        match = m
+
     if match is None:
         return None
-    return match.group(1).strip()
+
+    result = text[match.end():close_idx].strip()
+    return result or None  # empty string -> None (Bug 14)
 
 
 def _has_submit(text: str) -> bool:
     """Check if the model output contains a <submit/> tag outside code blocks."""
-    stripped = _CODE_PATTERN.sub("", text)
+    stripped = _CODE_STRIP_PATTERN.sub("", text)
+    stripped = _MARKDOWN_FENCE_PATTERN.sub("", stripped)
     return _SUBMIT_PATTERN.search(stripped) is not None
 
 
@@ -191,14 +203,6 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         return state
 
-    def _check_submitted(self, state: State) -> bool:
-        """Check if the rollout should end.
-
-        Only checks the ``submitted`` flag. The rollout loop is responsible for
-        setting this flag *after* processing any code in the same message.
-        """
-        return state.get("submitted", False)
-
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         """Disabled — we handle max turns in env_response via final_env_response.
@@ -257,6 +261,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
         Delegates to TurnProcessor for domain logic and applies state updates.
         """
         code = _extract_code(content)
+        # Lazily create processor if not set (supports __new__-based test setup)
+        if not hasattr(self, "_processor"):
+            self._processor = TurnProcessor(self._sandbox)
         outcome = await self._processor.process(
             code=code,
             test_inputs=state["test_inputs"],

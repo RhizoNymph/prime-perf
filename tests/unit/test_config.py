@@ -65,10 +65,23 @@ class TestSandboxConfigDefaults:
         assert cfg.ulimit_fsize_kb == 10_240
 
     def test_ro_bind_paths(self) -> None:
+        from pathlib import Path
+
         cfg = SandboxConfig()
         assert "/usr" in cfg.ro_bind_paths
         assert "/lib" in cfg.ro_bind_paths
-        assert "/lib64" in cfg.ro_bind_paths
+        # /lib64 only present in config when it exists on disk
+        if Path("/lib64").exists():
+            assert "/lib64" in cfg.ro_bind_paths
+        else:
+            assert "/lib64" not in cfg.ro_bind_paths
+
+    def test_ro_bind_paths_all_exist(self) -> None:
+        from pathlib import Path
+
+        cfg = SandboxConfig()
+        for p in cfg.ro_bind_paths:
+            assert Path(p).exists(), f"ro_bind_path does not exist: {p}"
 
     def test_hardware_profile_is_valid(self) -> None:
         cfg = SandboxConfig()
