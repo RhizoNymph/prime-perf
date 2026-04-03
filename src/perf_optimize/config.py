@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .counters import HardwareProfile, detect_profile
 from .languages import Language, LanguageConfig, resolve_language_config
 
 
 def _default_ro_bind_paths() -> tuple[str, ...]:
-    return ("/usr", "/lib", "/lib64", "/etc/alternatives", "/etc/ld.so.cache")
+    candidates = ("/usr", "/lib", "/lib64", "/etc/alternatives", "/etc/ld.so.cache")
+    return tuple(p for p in candidates if Path(p).exists())
 
 
 def _default_hardware_profile() -> HardwareProfile:

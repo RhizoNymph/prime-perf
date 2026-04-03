@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import structlog
 import verifiers as vf
@@ -18,35 +18,46 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ChatMessage, Messages, State
 
 from .config import SandboxConfig
-from .exceptions import (
-    CounterNotCountedError,
-    CounterNotFoundError,
-    CounterNotSupportedError,
-    PerfMeasurementError,
-    PerfParseError,
-)
 from .languages import Language
 from .problems import build_dataset_rows
-from .prompts import (
-    format_compile_error,
-    format_no_code_found,
-    format_perf_feedback,
-    format_system_prompt,
-    format_test_failure,
-)
-from .reward import PERF_WEIGHT_MAP, compute_weighted_improvement, correctness_gate, perf_reward
+from .processor import TurnProcessor
+from .prompts import format_system_prompt
+from .reward import correctness_gate, perf_reward
 from .sandbox import PerfSandbox
-from .types import CompilationFailure
 
 logger = structlog.get_logger(__name__)
 
-# Regex to extract code from <code lang="...">...</code> blocks.
-# The lang attribute is optional.
-_CODE_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>\s*(.*)\s*</code>", re.DOTALL)
+
+class PerfOptimizeState(TypedDict):
+    """Environment-specific state fields set by setup_state."""
+
+    test_inputs: list[bytes]
+    expected_outputs: list[bytes]
+    perf_input: bytes
+    comparison: str
+    tolerance: float | None
+    reference_perf: dict[str, float] | None
+    best_perf_dict: dict[str, float] | None
+    best_wall_clock_ms: float | None
+    submitted: bool
+    compile_failures: int
+    test_failures: int
+    correct_submissions: int
+
+
+# For extraction: find opening tags
+_CODE_OPEN_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>")
+_CODE_CLOSE = "</code>"
+
+# For stripping in _has_submit: non-greedy to strip each block individually
+_CODE_STRIP_PATTERN = re.compile(r"<code(?:\s+lang=\"[^\"]*\")?>.*?</code>", re.DOTALL)
 
 # Regex to detect <submit/> tag as a standalone command (on its own line).
 # Prevents false positives from mentions in prose or inside <code> blocks.
 _SUBMIT_PATTERN = re.compile(r"^\s*<submit\s*/?>\s*$", re.MULTILINE)
+
+# Regex to strip markdown fenced code blocks before submit detection.
+_MARKDOWN_FENCE_PATTERN = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
 
 
 def _default_problems_dir() -> Path:
@@ -74,16 +85,28 @@ def _default_problems_dir() -> Path:
 
 
 def _extract_code(text: str) -> str | None:
-    """Extract code from <code>...</code> tags in model output."""
-    match = _CODE_PATTERN.search(text)
+    """Extract code from the last <code>...</code> block in model output."""
+    close_idx = text.rfind(_CODE_CLOSE)
+    if close_idx == -1:
+        return None
+
+    # Find the last opening tag before the closing tag
+    prefix = text[:close_idx]
+    match = None
+    for m in _CODE_OPEN_PATTERN.finditer(prefix):
+        match = m
+
     if match is None:
         return None
-    return match.group(1).strip()
+
+    result = text[match.end():close_idx].strip()
+    return result or None  # empty string -> None (Bug 14)
 
 
 def _has_submit(text: str) -> bool:
     """Check if the model output contains a <submit/> tag outside code blocks."""
-    stripped = _CODE_PATTERN.sub("", text)
+    stripped = _CODE_STRIP_PATTERN.sub("", text)
+    stripped = _MARKDOWN_FENCE_PATTERN.sub("", stripped)
     return _SUBMIT_PATTERN.search(stripped) is not None
 
 
@@ -113,6 +136,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         self._sandbox_config = SandboxConfig.from_env(language)
         self._sandbox = PerfSandbox(self._sandbox_config)
+        self._processor = TurnProcessor(self._sandbox)
         self._language = language
         self._problem_filter = problems
 
@@ -179,14 +203,6 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         return state
 
-    def _check_submitted(self, state: State) -> bool:
-        """Check if the rollout should end.
-
-        Only checks the ``submitted`` flag. The rollout loop is responsible for
-        setting this flag *after* processing any code in the same message.
-        """
-        return state.get("submitted", False)
-
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         """Disabled — we handle max turns in env_response via final_env_response.
@@ -242,92 +258,32 @@ class PerfOptimizeEnv(MultiTurnEnv):
     ) -> list[ChatMessage]:
         """Compile, test, and measure the agent's code submission.
 
-        Returns feedback messages. Mutates state tracking fields in-place.
+        Delegates to TurnProcessor for domain logic and applies state updates.
         """
         code = _extract_code(content)
-        if code is None:
-            feedback = format_no_code_found(turn, max_turns)
-            return [{"role": "user", "content": feedback}]
+        # Lazily create processor if not set (supports __new__-based test setup)
+        if not hasattr(self, "_processor"):
+            self._processor = TurnProcessor(self._sandbox)
+        outcome = await self._processor.process(
+            code=code,
+            test_inputs=state["test_inputs"],
+            expected_outputs=state["expected_outputs"],
+            perf_input=state["perf_input"],
+            comparison=state["comparison"],
+            tolerance=state["tolerance"],
+            reference_perf=state.get("reference_perf"),
+            best_perf_dict=state.get("best_perf_dict"),
+            best_wall_clock_ms=state.get("best_wall_clock_ms"),
+            turn=turn,
+            max_turns=max_turns,
+        )
 
-        # Run the full pipeline: compile → test → perf
-        from .comparison import ComparisonMode
-
-        perf_error: str | None = None
-        try:
-            result = await self._sandbox.compile_and_run(
-                source_code=code,
-                test_inputs=state["test_inputs"],
-                expected_outputs=state["expected_outputs"],
-                perf_input=state["perf_input"],
-                comparison=ComparisonMode(state["comparison"]),
-                tolerance=state["tolerance"],
-            )
-        except (
-            PerfMeasurementError,
-            CounterNotSupportedError,
-            CounterNotCountedError,
-            CounterNotFoundError,
-            PerfParseError,
-        ) as exc:
-            # Raised only after tests pass (during _run_perf / parse_perf_output),
-            # so compilation and correctness are fine — we just lack perf data.
-            logger.warning("perf_measurement_failed", error=str(exc))
-            perf_error = str(exc)
-            from .types import CompilationSuccess, ExecutionResult, TestReport, TestResult
-
-            result = ExecutionResult(
-                compilation=CompilationSuccess(),
-                test_report=TestReport(results=(TestResult(name="assumed", passed=True),)),
-                perf_counters=None,
-                wall_clock_ms=None,
-            )
-
-        # Handle compilation failure
-        if isinstance(result.compilation, CompilationFailure):
-            state["compile_failures"] += 1
-            stderr = result.compilation.stderr
-            feedback = format_compile_error(stderr, turn, max_turns)
-            return [{"role": "user", "content": feedback}]
-
-        # Handle test failure
-        if result.test_report is not None and not result.test_report.all_passed:
-            state["test_failures"] += 1
-            feedback = format_test_failure(
-                result.test_report.passed,
-                result.test_report.total,
-                result.test_report.errors,
-                turn,
-                max_turns,
-            )
-            return [{"role": "user", "content": feedback}]
-
-        # Tests passed — record correct submission
-        state["correct_submissions"] += 1
-
-        if result.perf_counters is not None:
-            agent_perf = result.perf_counters.to_dict()
-
-            # Track best performance by weighted reward score
-            ref_perf = state.get("reference_perf") or {}
-            current_best = state.get("best_perf_dict")
-            if current_best is None:
-                state["best_perf_dict"] = agent_perf
-                state["best_wall_clock_ms"] = result.wall_clock_ms
+        # Apply state mutations from the processor
+        for key, value in outcome.state_updates.items():
+            if key.endswith("_delta"):
+                field = key.removesuffix("_delta")
+                state[field] = state.get(field, 0) + value
             else:
-                new_score = compute_weighted_improvement(ref_perf, agent_perf)
-                best_score = compute_weighted_improvement(ref_perf, current_best)
-                if new_score > best_score:
-                    state["best_perf_dict"] = agent_perf
-                    state["best_wall_clock_ms"] = result.wall_clock_ms
+                state[key] = value
 
-            feedback = format_perf_feedback(
-                agent_perf, ref_perf, turn, max_turns, rewarded_counters=set(PERF_WEIGHT_MAP)
-            )
-        else:
-            detail = f": {perf_error}" if perf_error else ""
-            feedback = (
-                f"**All tests passed** (turn {turn}/{max_turns}), "
-                f"but perf measurement unavailable{detail}. Try again."
-            )
-
-        return [{"role": "user", "content": feedback}]
+        return [{"role": "user", "content": outcome.feedback}]

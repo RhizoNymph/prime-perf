@@ -52,9 +52,15 @@ thresholds.
 ### Verifiers Environment (`src/perf_optimize/env.py`)
 `PerfOptimizeEnv(MultiTurnEnv)` — the main environment class. Implements the verifiers
 `env_response()` hook to process each model turn: extract code from `<code>` tags,
-compile/test/measure via the sandbox, and return structured perf feedback. Terminates
-via `final_env_response` on `<submit/>` or max turns. Entry point: `load_environment()`
-in `__init__.py`.
+delegate to the `TurnProcessor` for compile/test/measure, and return structured perf
+feedback. Terminates via `final_env_response` on `<submit/>` or max turns. Entry
+point: `load_environment()` in `__init__.py`.
+
+### Turn Processor (`src/perf_optimize/processor.py`)
+`TurnProcessor` encapsulates the compile/test/measure domain logic decoupled from the
+verifiers SDK. Operates on plain dicts and dataclasses, returning `TurnOutcome` values
+with feedback strings and state update dicts. State updates use a `_delta` suffix
+convention for incremental counters.
 
 ### Reward (`src/perf_optimize/reward.py`)
 Pure functions for reward computation. `correctness_gate` penalizes agents that never
@@ -181,7 +187,13 @@ load_environment(language, max_turns)
 ### verifiers_environment
 - description: Multi-turn verifiers environment for LLM code optimization with perf feedback
 - entry_points: [load_environment, PerfOptimizeEnv]
-- depends_on: [sandbox, problem_bank, reward, prompts]
+- depends_on: [sandbox, problem_bank, reward, prompts, turn_processor]
+- doc: docs/features/verifiers_environment.md
+
+### turn_processor
+- description: SDK-independent turn processing logic (compile, test, measure, feedback)
+- entry_points: [TurnProcessor, TurnOutcome]
+- depends_on: [sandbox, prompts, reward]
 - doc: docs/features/verifiers_environment.md
 
 ### reward

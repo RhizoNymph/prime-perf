@@ -74,6 +74,31 @@ class TestBuildBwrapCommand:
         assert "--unshare-pid" in cmd
         assert "--new-session" in cmd
         assert "--die-with-parent" in cmd
+        assert "--clearenv" in cmd
+
+    def test_clearenv_and_setenv(self) -> None:
+        cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)
+
+        # --clearenv must come before all --setenv entries
+        clearenv_idx = cmd.index("--clearenv")
+        setenv_indices = [i for i, v in enumerate(cmd) if v == "--setenv"]
+        assert all(
+            clearenv_idx < idx for idx in setenv_indices
+        ), "--clearenv must precede all --setenv entries"
+
+        # Verify the three expected --setenv triplets exist as contiguous subsequences
+        expected_triplets = [
+            ("--setenv", "PATH", "/usr/bin:/usr/local/bin"),
+            ("--setenv", "HOME", "/work"),
+            ("--setenv", "LC_ALL", "C"),
+        ]
+        for triplet in expected_triplets:
+            found = False
+            for i in setenv_indices:
+                if i + 2 < len(cmd) and (cmd[i], cmd[i + 1], cmd[i + 2]) == triplet:
+                    found = True
+                    break
+            assert found, f"--setenv triplet not found: {triplet}"
 
     def test_chdir_to_work(self) -> None:
         cmd = build_bwrap_command(self.config, self.work_dir, self.inner_cmd)
@@ -157,7 +182,7 @@ class TestBuildCompileCommand:
     def test_c_default_config(self) -> None:
         config = SandboxConfig()  # default language is C
         cmd = build_compile_command(config, "solution.c", "solution")
-        assert cmd == ["gcc", "-O2", "-lm", "-o", "solution", "solution.c"]
+        assert cmd == ["gcc", "-O2", "-o", "solution", "solution.c", "-lm"]
 
     def test_rust_config(self) -> None:
         from perf_optimize.languages import Language, resolve_language_config
@@ -185,10 +210,20 @@ class TestBuildCompileCommand:
         o_idx = cmd.index("-o")
         assert cmd[o_idx + 1] == "output_bin"
 
-    def test_source_file_is_last(self) -> None:
+    def test_source_file_before_linker_flags(self) -> None:
         config = SandboxConfig()
         cmd = build_compile_command(config, "main.c", "main")
-        assert cmd[-1] == "main.c"
+        # For C, source comes before linker flags: [..., main.c, -lm]
+        src_idx = cmd.index("main.c")
+        assert src_idx < len(cmd) - 1  # not last because -lm follows
+        assert cmd[-1] == "-lm"
+
+    def test_linker_flags_after_source(self) -> None:
+        config = SandboxConfig()  # default C has linker_flags=("-lm",)
+        cmd = build_compile_command(config, "solution.c", "solution")
+        src_idx = cmd.index("solution.c")
+        lm_idx = cmd.index("-lm")
+        assert lm_idx > src_idx, "-lm must come after source file"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
