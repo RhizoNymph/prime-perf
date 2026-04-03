@@ -13,6 +13,7 @@ The variance field (when present) contains a percentage with a ``%`` suffix.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from perf_optimize.exceptions import (
@@ -26,7 +27,14 @@ if TYPE_CHECKING:
     from perf_optimize.counters import HardwareProfile
 
 
-def parse_csv_line(line: str) -> PerfCSVLine | str | None:
+class PerfLineStatus(StrEnum):
+    """Sentinel values for non-data lines in perf CSV output."""
+
+    NOT_SUPPORTED = "not_supported"
+    NOT_COUNTED = "not_counted"
+
+
+def parse_csv_line(line: str) -> PerfCSVLine | PerfLineStatus | None:
     """Parse a single line of ``perf stat -x ','`` CSV output.
 
     Returns:
@@ -50,10 +58,10 @@ def parse_csv_line(line: str) -> PerfCSVLine | str | None:
     event_name = fields[2]
 
     if "<not supported>" in raw_value:
-        return "not_supported"
+        return PerfLineStatus.NOT_SUPPORTED
 
     if "<not counted>" in raw_value:
-        return "not_counted"
+        return PerfLineStatus.NOT_COUNTED
 
     # Skip derived metric lines (empty counter_value or empty event_name)
     if not raw_value or not event_name:
@@ -139,13 +147,13 @@ def parse_perf_output(csv_text: str, profile: HardwareProfile) -> PerfCounters:
         if result is None:
             continue
 
-        if result == "not_supported":
+        if result is PerfLineStatus.NOT_SUPPORTED:
             event = _extract_event_name(line)
             if event in expected_events:
                 raise CounterNotSupportedError(event)
             continue
 
-        if result == "not_counted":
+        if result is PerfLineStatus.NOT_COUNTED:
             event = _extract_event_name(line)
             if event in expected_events:
                 raise CounterNotCountedError(counter=event)
