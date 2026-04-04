@@ -202,7 +202,7 @@ class PerfSandbox:
         # Step 1: Compile
         compilation = await self._compile(work_dir)
         if isinstance(compilation, CompilationFailure):
-            logger.info("compilation_failed", outcome=compilation.outcome)
+            logger.info("compilation_failed", outcome=compilation.outcome, stderr=compilation.stderr[:500])
             return ExecutionResult(
                 compilation=compilation,
                 test_report=None,

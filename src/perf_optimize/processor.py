@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 
-from .comparison import ComparisonConfig
+from .comparison import ComparisonConfig, ComparisonMode
 from .exceptions import (
     CounterNotCountedError,
     CounterNotFoundError,
@@ -64,7 +64,8 @@ class TurnProcessor:
         test_inputs: list[bytes],
         expected_outputs: list[bytes],
         perf_input: bytes,
-        comparison: ComparisonConfig,
+        comparison: ComparisonConfig | str,
+        tolerance: float | None = None,
         reference_perf: dict[str, float] | None,
         best_perf_dict: dict[str, float] | None,
         best_wall_clock_ms: float | None,
@@ -78,7 +79,9 @@ class TurnProcessor:
             test_inputs: Binary test inputs for correctness checking.
             expected_outputs: Expected binary outputs for correctness checking.
             perf_input: Binary input for performance measurement.
-            comparison: Comparison configuration (mode and optional tolerance).
+            comparison: Comparison config, or mode string (e.g. "exact").
+            tolerance: Optional tolerance for float comparison (used when
+                comparison is passed as a string).
             reference_perf: Reference perf counters from naive solution.
             best_perf_dict: Best perf counters seen so far, or None.
             best_wall_clock_ms: Best wall clock time seen so far, or None.
@@ -88,6 +91,11 @@ class TurnProcessor:
         Returns:
             TurnOutcome with feedback string and state update dict.
         """
+        if isinstance(comparison, str):
+            comparison = ComparisonConfig(
+                mode=ComparisonMode(comparison), tolerance=tolerance,
+            )
+
         if code is None:
             return TurnOutcome(feedback=format_no_code_found(turn, max_turns))
 
