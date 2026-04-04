@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -17,7 +18,7 @@ from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import ChatMessage, Messages, State
 
-from .config import SandboxConfig
+from .config import SandboxConfig, _detect_unshare_net
 from .languages import Language
 from .problems import build_dataset_rows
 from .processor import TurnProcessor
@@ -134,7 +135,15 @@ class PerfOptimizeEnv(MultiTurnEnv):
         if problems_dir is None:
             problems_dir = _default_problems_dir()
 
-        self._sandbox_config = SandboxConfig.from_env(language)
+        config = SandboxConfig.from_env(language)
+        if config.unshare_net and not _detect_unshare_net(config.bwrap_path):
+            logger.warning(
+                "unshare_net_unavailable",
+                hint="bwrap --unshare-net failed on this system; "
+                     "sandbox will run without network namespace isolation",
+            )
+            config = replace(config, unshare_net=False)
+        self._sandbox_config = config
         self._sandbox = PerfSandbox(self._sandbox_config)
         self._processor = TurnProcessor(self._sandbox)
         self._language = language

@@ -7,15 +7,25 @@ falling back to sensible defaults.
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
+
+import structlog
 
 from .counters import HardwareProfile, detect_profile
 from .languages import Language, LanguageConfig, resolve_language_config
 
+logger = structlog.get_logger(__name__)
+
 
 def _default_ro_bind_paths() -> tuple[str, ...]:
-    candidates = ("/usr", "/lib", "/lib64", "/etc/alternatives", "/etc/ld.so.cache")
+    candidates = (
+        "/usr", "/bin", "/sbin",
+        "/lib", "/lib64",
+        "/etc/alternatives", "/etc/ld.so.cache",
+    )
     return tuple(p for p in candidates if Path(p).exists())
 
 
@@ -25,6 +35,29 @@ def _default_hardware_profile() -> HardwareProfile:
 
 def _default_language() -> LanguageConfig:
     return resolve_language_config(Language.C)
+
+
+@cache
+def _detect_unshare_net(bwrap_path: str = "bwrap") -> bool:
+    """Check whether ``bwrap --unshare-net`` works on this system.
+
+    On some kernels/distros (e.g. Ubuntu 24.04+ with AppArmor restricting
+    unprivileged user namespaces), ``--unshare-net`` fails with::
+
+        bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+
+    Returns False in that case so the sandbox can run without network isolation.
+    """
+    try:
+        result = subprocess.run(
+            [bwrap_path, "--unshare-net", "--ro-bind", "/usr", "/usr",
+             "--", "/usr/bin/true"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -47,6 +80,7 @@ class SandboxConfig:
     ulimit_mem_kb: int = 512_000
     ulimit_procs: int = 32
     ulimit_fsize_kb: int = 10_240
+    unshare_net: bool = True
     ro_bind_paths: tuple[str, ...] = field(default_factory=_default_ro_bind_paths)
     hardware_profile: HardwareProfile = field(default_factory=_default_hardware_profile)
     cv_threshold_cycles: float = 0.05
@@ -92,5 +126,10 @@ class SandboxConfig:
             env_val = os.environ.get(f"PERF_OPT_{attr.upper()}")
             if env_val is not None:
                 kwargs[attr] = int(env_val)
+
+        # Allow explicit override of --unshare-net via env var
+        unshare_env = os.environ.get("PERF_OPT_UNSHARE_NET")
+        if unshare_env is not None:
+            kwargs["unshare_net"] = unshare_env.lower() in ("1", "true", "yes")
 
         return cls(**kwargs)

@@ -54,7 +54,8 @@ def build_bwrap_command(
     cmd.extend(["--tmpfs", "/tmp"])
 
     # Isolation flags
-    cmd.append("--unshare-net")
+    if config.unshare_net:
+        cmd.append("--unshare-net")
     cmd.append("--unshare-pid")
     cmd.append("--new-session")
     cmd.append("--die-with-parent")
