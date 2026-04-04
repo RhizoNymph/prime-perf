@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .comparison import ComparisonConfig, ComparisonMode
-from .languages import Language
+from .languages import Language, resolve_language_config
 from .types import PerfCounters
 
 if TYPE_CHECKING:
@@ -64,6 +64,10 @@ def _load_comparison(problem_dir: Path) -> ComparisonConfig:
     data = json.loads(comp_file.read_text())
     mode = ComparisonMode(data["mode"])
     tolerance = data.get("tolerance")
+    if mode == ComparisonMode.TOLERANCE and tolerance is None:
+        raise ValueError(
+            "tolerance mode requires a 'tolerance' value in comparison.json"
+        )
     return ComparisonConfig(mode=mode, tolerance=tolerance)
 
 
@@ -90,6 +94,18 @@ def _load_test_files(tests_dir: Path) -> tuple[tuple[bytes, ...], tuple[bytes, .
             )
         outputs.append(expected_file.read_bytes())
         i += 1
+
+    # Check for non-contiguous files (e.g., input_0, input_1, input_3 — missing input_2)
+    all_input_files = list(tests_dir.glob("input_*.bin"))
+    if len(all_input_files) > i:
+        extra = sorted(
+            f.name for f in all_input_files
+            if f.name not in {f"input_{j}.bin" for j in range(i)}
+        )
+        raise FileNotFoundError(
+            f"Non-contiguous test files in {tests_dir}: found {extra} "
+            f"beyond contiguous range input_0..input_{i - 1}"
+        )
 
     return tuple(inputs), tuple(outputs)
 
@@ -165,13 +181,7 @@ def load_problem_with_reference(
     """
     spec = load_problem(problem_dir)
 
-    lang_config_map = {
-        Language.C: ".c",
-        Language.RUST: ".rs",
-        Language.PYTHON: ".py",
-        Language.TYPESCRIPT: ".ts",
-    }
-    ext = lang_config_map[language]
+    ext = resolve_language_config(language).file_extension
     ref_file = problem_dir / "reference" / f"solution{ext}"
     reference_source = ref_file.read_text()
 
@@ -185,8 +195,17 @@ def load_problem_with_reference(
     )
 
 
-def _format_prompt(problem: ProblemWithReference) -> str:
-    """Format a problem into a prompt for the LLM agent."""
+def _format_prompt(
+    problem: ProblemWithReference,
+    rewarded_counters: set[str] | None = None,
+) -> str:
+    """Format a problem into a prompt for the LLM agent.
+
+    Args:
+        problem: The problem with reference solution.
+        rewarded_counters: If provided, only display these counters in the
+            prompt. ``None`` displays all available counters.
+    """
     lines = [
         problem.spec.spec_text.strip(),
         "",
@@ -204,6 +223,8 @@ def _format_prompt(problem: ProblemWithReference) -> str:
             "## Reference Performance",
         ])
         perf_dict = problem.reference_perf.to_dict()
+        if rewarded_counters is not None:
+            perf_dict = {k: v for k, v in perf_dict.items() if k in rewarded_counters}
         for counter, value in perf_dict.items():
             lines.append(f"  {counter}: {value:,.0f}")
         if problem.reference_perf.ipc > 0:
@@ -226,6 +247,7 @@ def build_dataset_rows(
     problems_dir: Path,
     language: Language,
     profile_name: str,
+    rewarded_counters: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build dataset rows from the problem bank.
 
@@ -233,6 +255,8 @@ def build_dataset_rows(
         problems_dir: Root directory containing problem subdirectories.
         language: Which language to use for reference solutions.
         profile_name: Hardware profile name for perf baselines.
+        rewarded_counters: If provided, only display these counters in the
+            prompt. ``None`` displays all available counters.
 
     Returns:
         List of dicts with prompt, answer, and info columns.
@@ -246,7 +270,7 @@ def build_dataset_rows(
             continue
 
         problem = load_problem_with_reference(problem_dir, language, profile_name)
-        prompt = _format_prompt(problem)
+        prompt = _format_prompt(problem, rewarded_counters=rewarded_counters)
 
         info: dict[str, Any] = {
             "problem_name": problem.spec.name,

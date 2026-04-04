@@ -7,7 +7,7 @@ Structured domain exceptions for all failure modes in perf-optimize.
 ### In Scope
 - Base PerfOptimizeError
 - Prerequisite check failures (missing tools, wrong perf_event_paranoid)
-- Sandbox execution failures (bwrap, timeouts, perf measurement)
+- Sandbox execution failures (bwrap, perf measurement)
 - Perf output parsing failures (missing counters, not-counted counters)
 
 ### Not in Scope
@@ -28,8 +28,6 @@ PerfOptimizeError (base)
   |
   +-- SandboxError
   |     +-- BwrapInvocationError
-  |     +-- CompilationTimeoutError
-  |     +-- TestTimeoutError
   |     +-- PerfMeasurementError
   |
   +-- PerfParseError(message, raw_output)
@@ -41,7 +39,7 @@ PerfOptimizeError (base)
 
 | File | Contents | Key Exports |
 |------|----------|-------------|
-| `src/perf_optimize/exceptions.py` | All exception classes | PerfOptimizeError, PrerequisiteError, BwrapNotFoundError, PerfNotFoundError, GccNotFoundError, TasksetNotFoundError, PerfParanoidError, SandboxError, BwrapInvocationError, CompilationTimeoutError, TestTimeoutError, PerfMeasurementError, PerfParseError, CounterNotFoundError, CounterNotCountedError |
+| `src/perf_optimize/exceptions.py` | All exception classes | PerfOptimizeError, PrerequisiteError, BwrapNotFoundError, PerfNotFoundError, GccNotFoundError, TasksetNotFoundError, PerfParanoidError, SandboxError, BwrapInvocationError, PerfMeasurementError, PerfParseError, CounterNotFoundError, CounterNotCountedError |
 
 ## Invariants and Constraints
 
@@ -50,4 +48,3 @@ PerfOptimizeError (base)
 - PerfParseError always stores raw_output for debugging
 - CounterNotFoundError and CounterNotCountedError store the counter name
 - Prerequisite errors have zero-arg constructors with descriptive default messages (except PerfParanoidError)
-- Timeout errors optionally accept timeout_s to include in the message

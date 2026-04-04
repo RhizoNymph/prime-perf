@@ -5,6 +5,8 @@ All functions are pure string formatters with no external dependencies.
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
+
 SYSTEM_PROMPT_TEMPLATE = """\
 You are a performance optimization expert. Your task is to optimize the given \
 reference solution to run as fast as possible while maintaining correctness.
@@ -80,7 +82,7 @@ def format_perf_feedback(
     turn: int,
     max_turns: int,
     *,
-    rewarded_counters: set[str] | None = None,
+    rewarded_counters: AbstractSet[str] | None = None,
 ) -> str:
     """Format performance counter feedback.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -51,6 +52,22 @@ class TestExtractCode:
         assert 'printf("</code>");' in result
         assert "return 0;" in result
 
+    def test_multiple_code_blocks_takes_last(self) -> None:
+        """When multiple code blocks exist, the last one is extracted."""
+        text = '<code lang="c">int first() {}</code>\nHere is v2:\n<code lang="c">int second() {}</code>'
+        result = _extract_code(text)
+        assert result == "int second() {}"
+
+    def test_empty_code_block_returns_none(self) -> None:
+        """An empty code block returns None."""
+        text = "<code></code>"
+        assert _extract_code(text) is None
+
+    def test_whitespace_only_code_block_returns_none(self) -> None:
+        """A whitespace-only code block returns None."""
+        text = "<code>   </code>"
+        assert _extract_code(text) is None
+
 
 class TestHasSubmit:
     def test_submit_on_own_line(self) -> None:
@@ -82,6 +99,16 @@ class TestHasSubmit:
     def test_submit_after_code_block(self) -> None:
         text = '<code lang="c">int main() {}</code>\n<submit/>'
         assert _has_submit(text)
+
+    def test_submit_between_code_blocks_detected(self) -> None:
+        """A <submit/> between two code blocks is outside both and should match."""
+        text = "<code>x</code>\n<submit/>\n<code>y</code>"
+        assert _has_submit(text)
+
+    def test_submit_in_markdown_fence_does_not_match(self) -> None:
+        """A <submit/> inside a markdown fenced code block should not match."""
+        text = "Here is how to submit:\n```\n<submit/>\n```\nThat's it."
+        assert not _has_submit(text)
 
 
 class TestSetupState:
@@ -124,24 +151,42 @@ class TestSetupState:
         assert result["correct_submissions"] == 0
 
 
-class TestCheckSubmitted:
-    """_check_submitted only checks state['submitted'] — submit detection is in rollout."""
+class TestSandboxErrorHandling:
+    """_process_turn should catch SandboxError and return infrastructure error feedback."""
 
-    def test_submitted_state_returns_true(self) -> None:
+    @pytest.mark.asyncio
+    async def test_bwrap_invocation_error_returns_feedback(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
+        from perf_optimize.exceptions import BwrapInvocationError
 
-        state = {"submitted": True}
-        assert PerfOptimizeEnv._check_submitted(None, state) is True  # type: ignore[arg-type]
+        state = {
+            "test_inputs": [b"input"],
+            "expected_outputs": [b"output"],
+            "perf_input": b"perf",
+            "comparison": "exact",
+            "tolerance": None,
+            "reference_perf": {"cycles": 1000.0},
+            "best_perf_dict": None,
+            "best_wall_clock_ms": None,
+            "submitted": False,
+            "compile_failures": 0,
+            "test_failures": 0,
+            "correct_submissions": 0,
+        }
 
-    def test_not_submitted_returns_false(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
+        content = '<code lang="c">int main() { return 0; }</code>'
 
-        state: dict = {"submitted": False}
-        # _check_submitted does NOT check message content — rollout handles that
-        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]
+        env = PerfOptimizeEnv.__new__(PerfOptimizeEnv)
+        env._sandbox = AsyncMock()
+        env._sandbox.compile_and_run = AsyncMock(
+            side_effect=BwrapInvocationError("bwrap failed to start")
+        )
 
-    def test_missing_key_returns_false(self) -> None:
-        from perf_optimize.env import PerfOptimizeEnv
+        result = await env._process_turn(content, state, turn=1, max_turns=5)
 
-        state: dict = {}
-        assert PerfOptimizeEnv._check_submitted(None, state) is False  # type: ignore[arg-type]
+        assert len(result) == 1
+        msg = result[0]
+        assert msg["role"] == "user"
+        assert "Infrastructure error" in msg["content"]
+        assert "bwrap failed to start" in msg["content"]
+        assert "not a problem with your code" in msg["content"]

@@ -7,6 +7,7 @@ keyword arguments matching the verifiers Rubric signature introspection
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
@@ -54,6 +55,8 @@ def compute_weighted_improvement(
         if ref_val is None or agent_val is None:
             continue
         if ref_val == 0:
+            continue
+        if not math.isfinite(ref_val) or not math.isfinite(agent_val):
             continue
         improvement = (ref_val - agent_val) / ref_val
         weighted_sum += w * improvement
