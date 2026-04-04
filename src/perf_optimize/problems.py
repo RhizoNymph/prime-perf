@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .comparison import ComparisonMode
+from .comparison import ComparisonConfig, ComparisonMode
 from .languages import Language, resolve_language_config
 from .types import PerfCounters
 
@@ -30,8 +30,7 @@ class ProblemSpec:
         test_inputs: Binary inputs for each test case.
         expected_outputs: Expected binary outputs for each test case.
         perf_input: Larger binary input for performance measurement.
-        comparison: How to compare actual vs expected output.
-        tolerance: Relative tolerance (only for comparison=TOLERANCE).
+        comparison: Comparison configuration (mode and optional tolerance).
     """
 
     name: str
@@ -39,8 +38,12 @@ class ProblemSpec:
     test_inputs: tuple[bytes, ...]
     expected_outputs: tuple[bytes, ...]
     perf_input: bytes
-    comparison: ComparisonMode
-    tolerance: float | None
+    comparison: ComparisonConfig
+
+    @property
+    def tolerance(self) -> float | None:
+        """Shortcut for comparison.tolerance."""
+        return self.comparison.tolerance
 
 
 @dataclass(frozen=True)
@@ -53,11 +56,11 @@ class ProblemWithReference:
     reference_perf: PerfCounters | None
 
 
-def _load_comparison(problem_dir: Path) -> tuple[ComparisonMode, float | None]:
+def _load_comparison(problem_dir: Path) -> ComparisonConfig:
     """Load comparison.json from a problem directory."""
     comp_file = problem_dir / "comparison.json"
     if not comp_file.exists():
-        return ComparisonMode.EXACT, None
+        return ComparisonConfig()
     data = json.loads(comp_file.read_text())
     mode = ComparisonMode(data["mode"])
     tolerance = data.get("tolerance")
@@ -65,7 +68,7 @@ def _load_comparison(problem_dir: Path) -> tuple[ComparisonMode, float | None]:
         raise ValueError(
             "tolerance mode requires a 'tolerance' value in comparison.json"
         )
-    return mode, tolerance
+    return ComparisonConfig(mode=mode, tolerance=tolerance)
 
 
 def _load_test_files(tests_dir: Path) -> tuple[tuple[bytes, ...], tuple[bytes, ...]]:
@@ -142,7 +145,7 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
     name = problem_dir.name
     spec_text = (problem_dir / "spec.md").read_text()
 
-    comparison, tolerance = _load_comparison(problem_dir)
+    comparison = _load_comparison(problem_dir)
 
     tests_dir = problem_dir / "tests"
     test_inputs, expected_outputs = _load_test_files(tests_dir)
@@ -160,7 +163,6 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
         expected_outputs=expected_outputs,
         perf_input=perf_input,
         comparison=comparison,
-        tolerance=tolerance,
     )
 
 
@@ -276,8 +278,8 @@ def build_dataset_rows(
             "test_inputs": [_encode_bytes(t) for t in problem.spec.test_inputs],
             "expected_outputs": [_encode_bytes(t) for t in problem.spec.expected_outputs],
             "perf_input": _encode_bytes(problem.spec.perf_input),
-            "comparison": problem.spec.comparison.value,
-            "tolerance": problem.spec.tolerance,
+            "comparison": problem.spec.comparison.mode.value,
+            "tolerance": problem.spec.comparison.tolerance,
         }
 
         if problem.reference_perf is not None:

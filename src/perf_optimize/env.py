@@ -189,8 +189,12 @@ class PerfOptimizeEnv(MultiTurnEnv):
         state["test_inputs"] = [base64.b64decode(t) for t in info["test_inputs"]]
         state["expected_outputs"] = [base64.b64decode(t) for t in info["expected_outputs"]]
         state["perf_input"] = base64.b64decode(info["perf_input"])
-        state["comparison"] = info["comparison"]
-        state["tolerance"] = info.get("tolerance")
+        from .comparison import ComparisonConfig, ComparisonMode
+
+        state["comparison"] = ComparisonConfig(
+            mode=ComparisonMode(info["comparison"]),
+            tolerance=info.get("tolerance"),
+        )
         state["reference_perf"] = info.get("reference_perf")
 
         # Tracking fields
@@ -270,7 +274,6 @@ class PerfOptimizeEnv(MultiTurnEnv):
             expected_outputs=state["expected_outputs"],
             perf_input=state["perf_input"],
             comparison=state["comparison"],
-            tolerance=state["tolerance"],
             reference_perf=state.get("reference_perf"),
             best_perf_dict=state.get("best_perf_dict"),
             best_wall_clock_ms=state.get("best_wall_clock_ms"),

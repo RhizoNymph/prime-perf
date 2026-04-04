@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Literal, overload
 import structlog
 
 from .bwrap import build_bwrap_command, build_compile_command, build_perf_command, build_run_command
-from .comparison import ComparisonMode, compare_outputs
+from .comparison import ComparisonConfig, compare_outputs
 from .exceptions import (
     BwrapInvocationError,
     BwrapNotFoundError,
@@ -107,8 +107,7 @@ class PerfSandbox:
         perf_input: bytes,
         *,
         test_names: list[str] | None = None,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> ExecutionResult:
         """Full pipeline: compile, test, measure.
 
@@ -118,8 +117,7 @@ class PerfSandbox:
             expected_outputs: Expected binary output for each test case.
             perf_input: Binary input for the performance measurement run.
             test_names: Optional names for each test case.
-            comparison: How to compare outputs (exact or tolerance-based).
-            tolerance: Relative tolerance for float comparison.
+            comparison: Comparison configuration (mode and optional tolerance).
 
         Returns:
             ExecutionResult with compilation, test, and perf counter data.
@@ -131,7 +129,7 @@ class PerfSandbox:
         try:
             return await self._run_pipeline(
                 source_code, test_inputs, expected_outputs, perf_input, test_names,
-                work_dir, comparison, tolerance,
+                work_dir, comparison,
             )
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -173,13 +171,8 @@ class PerfSandbox:
             work = Path(work_dir)
             lang = self._config.language
 
-<<<<<<< feat/sandbox-perf-types
-        source_file = work / f"solution{lang.file_extension}"
-        await asyncio.to_thread(source_file.write_text, source_code)
-=======
             source_file = work / f"solution{lang.file_extension}"
-            source_file.write_text(source_code)
->>>>>>> main
+            await asyncio.to_thread(source_file.write_text, source_code)
 
             result = await self._compile(work_dir)
             return result, work_dir
@@ -197,8 +190,7 @@ class PerfSandbox:
         perf_input: bytes,
         test_names: list[str],
         work_dir: str,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> ExecutionResult:
         work = Path(work_dir)
         lang = self._config.language
@@ -220,7 +212,7 @@ class PerfSandbox:
 
         # Step 2: Run tests
         test_report = await self._run_tests(
-            work_dir, test_inputs, expected_outputs, test_names, comparison, tolerance
+            work_dir, test_inputs, expected_outputs, test_names, comparison
         )
         if not test_report.all_passed:
             logger.info(
@@ -288,12 +280,11 @@ class PerfSandbox:
         test_inputs: list[bytes],
         expected_outputs: list[bytes],
         test_names: list[str],
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> TestReport:
         """Run correctness tests concurrently inside bwrap."""
         tasks = [
-            self._run_single_test(work_dir, name, inp, exp, comparison, tolerance)
+            self._run_single_test(work_dir, name, inp, exp, comparison)
             for name, inp, exp in zip(test_names, test_inputs, expected_outputs, strict=True)
         ]
         settled = await asyncio.gather(*tasks, return_exceptions=True)
@@ -316,8 +307,7 @@ class PerfSandbox:
         name: str,
         input_data: bytes,
         expected: bytes,
-        comparison: ComparisonMode = ComparisonMode.EXACT,
-        tolerance: float | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
     ) -> TestResult:
         """Run one test case: feed input, compare output to expected."""
         inner_cmd = build_run_command(self._config)
@@ -344,7 +334,7 @@ class PerfSandbox:
         if not stdout_bytes:
             return TestResult(name=name, passed=False, error="No output produced")
 
-        mismatch = compare_outputs(stdout_bytes, expected, comparison, tolerance)
+        mismatch = compare_outputs(stdout_bytes, expected, comparison.mode, comparison.tolerance)
         if mismatch is not None:
             return TestResult(name=name, passed=False, error=mismatch)
 
@@ -355,20 +345,14 @@ class PerfSandbox:
         perf_cmd = build_perf_command(self._config)
         bwrap_cmd = build_bwrap_command(self._config, work_dir, perf_cmd)
 
-<<<<<<< feat/sandbox-perf-types
         # Use provided data directly, or fall back to reading from disk (measure_only)
         if perf_input_data is not None:
             stdin_data = perf_input_data
         else:
             perf_input_path = Path(work_dir) / "perf_input.bin"
-            stdin_data = await asyncio.to_thread(perf_input_path.read_bytes) if perf_input_path.exists() else b""
-=======
-        # Read perf input from the work directory
-        perf_input_path = Path(work_dir) / "perf_input.bin"
-        if not perf_input_path.exists():
-            raise PerfMeasurementError(f"perf input file not found: {perf_input_path}")
-        stdin_data = perf_input_path.read_bytes()
->>>>>>> main
+            if not perf_input_path.exists():
+                raise PerfMeasurementError(f"perf input file not found: {perf_input_path}")
+            stdin_data = await asyncio.to_thread(perf_input_path.read_bytes)
 
         try:
             returncode, _stdout, stderr = await self._run_subprocess(

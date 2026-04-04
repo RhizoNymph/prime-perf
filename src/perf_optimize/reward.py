@@ -8,23 +8,25 @@ keyword arguments matching the verifiers Rubric signature introspection
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 # Default weights for performance counter improvement scoring.
 # Keys match PerfCounters.to_dict() field names.
-PERF_WEIGHT_MAP: dict[str, float] = {
+PERF_WEIGHT_MAP: Mapping[str, float] = MappingProxyType({
     "cycles": 0.5,
     "l1_dcache_load_misses": 0.2,
     "cache_misses": 0.2,
     "llc_load_misses": 0.2,
     "branch_misses": 0.1,
-}
+})
 
 
 def compute_weighted_improvement(
     ref: dict[str, float],
     agent: dict[str, float],
-    weights: dict[str, float] | None = None,
+    weights: Mapping[str, float] | None = None,
 ) -> float:
     """Compute weighted improvement ratio across available counters.
 
