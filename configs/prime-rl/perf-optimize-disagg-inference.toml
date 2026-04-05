@@ -1,0 +1,14 @@
+# Inference server config for the disaggregated two-rig setup.
+# Runs on rig B. Serves Qwen3-1.7B to rig A's orchestrator over the LAN.
+
+output_dir = "/mnt/nas/runs/perf-optimize-disagg"
+enable_lora = true
+max_lora_rank = 32
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+max_model_len = 12288
+
+[server]
+host = "0.0.0.0"
+port = 8000

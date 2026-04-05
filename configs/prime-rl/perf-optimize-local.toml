@@ -1,0 +1,67 @@
+# Local single-GPU run: trainer + inference share one 24GB GPU.
+# Model: Qwen3-1.7B with LoRA. Use this for iterating on the environment
+# and sanity-checking reward signal before scaling up.
+#
+# Usage:
+#   cd prime-rl
+#   uv pip install -e ../                    # install perf-optimize env
+#   CUDA_VISIBLE_DEVICES=0,0 uv run rl \
+#     @ ../configs/prime-rl/perf-optimize-local.toml \
+#     --inference.gpu-memory-utilization 0.5
+#
+# The `CUDA_VISIBLE_DEVICES=0,0` trick makes the launcher see two "devices"
+# that both point at physical GPU 0, so num_infer_gpus=1 and num_train_gpus=1
+# (the defaults under [deployment]) are colocated on the same card.
+
+output_dir = "outputs/perf-optimize-local"
+max_steps = 50
+seq_len = 8192
+
+[model]
+name = "Qwen/Qwen3-1.7B"
+
+[wandb]
+project = "perf-optimize"
+name = "perf-optimize-local-1.7b"
+
+[ckpt]
+interval = 25
+
+[trainer.model]
+impl = "auto"
+fsdp_cpu_offload = true
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "perf-optimize"
+args = { language = "c", max_turns = 5, problems = ["matmul"] }
+
+[inference]
+
+[inference.model]
+max_model_len = 8192
