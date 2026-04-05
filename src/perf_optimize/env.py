@@ -16,7 +16,7 @@ import structlog
 import verifiers as vf
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import ChatMessage, Messages, State
+from verifiers.types import Messages, State
 
 from .config import SandboxConfig, _detect_unshare_net
 from .languages import Language
@@ -238,8 +238,8 @@ class PerfOptimizeEnv(MultiTurnEnv):
         assert isinstance(messages, list)
 
         last_msg = messages[-1]
-        assert isinstance(last_msg, dict) and last_msg["role"] == "assistant"
-        content = last_msg.get("content", "")
+        assert last_msg["role"] == "assistant"
+        content = last_msg["content"] or ""
 
         turn = len(state["trajectory"])
         max_turns = self.max_turns
@@ -268,7 +268,7 @@ class PerfOptimizeEnv(MultiTurnEnv):
         state: State,
         turn: int,
         max_turns: int,
-    ) -> list[ChatMessage]:
+    ) -> Messages:
         """Compile, test, and measure the agent's code submission.
 
         Delegates to TurnProcessor for domain logic and applies state updates.
