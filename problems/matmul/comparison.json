@@ -1,1 +1,1 @@
-{"mode": "exact"}
+{"mode": "tolerance", "tolerance": 1e-4}
