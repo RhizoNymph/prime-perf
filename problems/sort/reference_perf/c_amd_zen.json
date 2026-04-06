@@ -1,0 +1,9 @@
+{
+  "cycles": 100248434,
+  "instructions": 99514900,
+  "cache_references": null,
+  "cache_misses": 110429,
+  "l1_dcache_load_misses": 581458,
+  "llc_load_misses": null,
+  "branch_misses": 2077146
+}
