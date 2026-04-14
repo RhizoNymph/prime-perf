@@ -202,17 +202,17 @@ Inference on node 0, trainer on node 1. Requires a shared filesystem.
 
 ```bash
 # On all nodes
-export OUTPUT_DIR=/shared/perf-optimize-multinode
+export OUTPUT_DIR=/shared/perf-optimize-disagg
 export INFERENCE_SERVER_IP=<private-ip-of-node-0>
 export INFERENCE_SERVER_API_KEY=<shared-secret>
 
 # Node 0: inference
 cd prime-rl
-uv run inference @ ../configs/prime-rl/perf-optimize-multinode.toml \
+uv run inference @ ../configs/prime-rl/perf-optimize-disagg-c-inference.toml \
   --api-key $INFERENCE_SERVER_API_KEY
 
 # Node 0 or 1: orchestrator (single instance)
-uv run orchestrator @ ../configs/prime-rl/perf-optimize-multinode.toml \
+uv run orchestrator @ ../configs/prime-rl/perf-optimize-disagg-c-full.toml \
   --client.base-url http://$INFERENCE_SERVER_IP:8000/v1 \
   --client.api-key-var INFERENCE_SERVER_API_KEY \
   --output-dir $OUTPUT_DIR
@@ -222,7 +222,7 @@ uv run torchrun \
   --nproc-per-node 1 \
   --local-rank-filter 0 \
   src/prime_rl/trainer/rl/train.py \
-  @ ../configs/prime-rl/perf-optimize-multinode.toml \
+  @ ../configs/prime-rl/perf-optimize-disagg-c-full.toml \
   --output-dir $OUTPUT_DIR
 ```
 
@@ -322,7 +322,7 @@ tests/
 - [x] **Phase 0** -- Measurement foundation (validated CV < 2% on AMD Zen4)
 - [x] **Phase 1** -- Problem bank (5 problems x 4 languages)
 - [x] **Phase 2** -- Verifiers environment with multi-turn feedback
-- [ ] **Phase 3** -- Single-GPU training (Qwen3.5-27B + QLoRA)
+- [x] **Phase 3** -- Single-GPU training with Disaggregated Inference (Qwen3-14B)
 - [ ] **Phase 4** -- Multi-GPU scaling (3x RTX 3090, FSDP2)
 - [ ] **Phase 5** -- Ablations (labeled vs unlabeled vs hidden counters)
 - [ ] **Phase 6** -- Expansion, cross-language analysis, Hub publication

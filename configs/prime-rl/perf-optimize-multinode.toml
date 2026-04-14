@@ -1,0 +1,88 @@
+# Two-node RL run: one inference GPU on node 0, one trainer GPU on node 1.
+# Model: Qwen3-4B-Instruct with LoRA. Use this to validate the multi-node
+# deployment path before scaling to hosted training.
+#
+# Prerequisites:
+#   - Shared filesystem across both nodes (set OUTPUT_DIR below to a shared path)
+#   - perf-optimize env installed in prime-rl venv on BOTH nodes
+#   - kernel.perf_event_paranoid <= 1 on the inference node (runs the env)
+#
+# Usage:
+#   # On all nodes
+#   export OUTPUT_DIR=/shared/perf-optimize-multinode
+#   export INFERENCE_SERVER_IP=<private-ip-of-node-0>
+#   export INFERENCE_SERVER_API_KEY=<shared-secret>
+#
+#   # Node 0 (inference)
+#   cd prime-rl
+#   uv run inference @ ../configs/prime-rl/perf-optimize-multinode.toml \
+#     --api-key $INFERENCE_SERVER_API_KEY
+#
+#   # Node 0 or 1 (orchestrator, single instance)
+#   uv run orchestrator @ ../configs/prime-rl/perf-optimize-multinode.toml \
+#     --client.base-url http://$INFERENCE_SERVER_IP:8000/v1 \
+#     --client.api-key-var INFERENCE_SERVER_API_KEY \
+#     --output-dir $OUTPUT_DIR
+#
+#   # Node 1 (trainer)
+#   uv run torchrun --nproc-per-node 1 --local-rank-filter 0 \
+#     src/prime_rl/trainer/rl/train.py \
+#     @ ../configs/prime-rl/perf-optimize-multinode.toml \
+#     --output-dir $OUTPUT_DIR
+
+output_dir = "outputs/perf-optimize-multinode"
+max_steps = 200
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[weight_broadcast]
+type = "nccl"
+
+[wandb]
+project = "perf-optimize"
+name = "perf-optimize-multinode-4b"
+
+[ckpt]
+interval = 50
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+dropout = 0.0
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 8
+
+[orchestrator.sampling]
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "perf-optimize"
+args = { language = "c", max_turns = 5 }
+
+[inference.parallel]
+tp = 1
+dp = 1

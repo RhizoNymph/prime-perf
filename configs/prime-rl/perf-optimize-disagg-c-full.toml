@@ -21,7 +21,7 @@
 #     --orchestrator.client.base-url http://<rig-b-ip>:8000/v1
 
 output_dir = "/mnt/nas/runs/perf-optimize-disagg"
-max_steps = 500
+max_steps = 750
 seq_len = 12288
 
 [model]
@@ -33,6 +33,7 @@ name = "perf-optimize-disagg-4b"
 
 [ckpt]
 interval = 50
+resume_step = 250
 
 [trainer.model]
 impl = "auto"
@@ -59,15 +60,38 @@ target_modules = [
 lr = 1e-5
 weight_decay = 0.0
 
+[trainer.loss]
+kl_tau = 0.05
+
 [orchestrator]
 batch_size = 16
-rollouts_per_example = 4
+rollouts_per_example = 8
 
 [orchestrator.sampling]
 max_tokens = 2048
-temperature = 1.4
+temperature = 1.0
 
 [[orchestrator.env]]
 id = "perf-optimize"
-name = "perf-optimize"
-args = { language = "c", max_turns = 5 }
+name = "matmul"
+args = { language = "c", max_turns = 5, problems = ["matmul"] }
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "nbody"
+args = { language = "c", max_turns = 5, problems = ["nbody"] }
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "sort"
+args = { language = "c", max_turns = 5, problems = ["sort"] }
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "stencil"
+args = { language = "c", max_turns = 5, problems = ["stencil"] }
+
+[[orchestrator.env]]
+id = "perf-optimize"
+name = "hash-table"
+args = { language = "c", max_turns = 5, problems = ["hash_table"] }
