@@ -14,7 +14,9 @@ from pathlib import Path
 import numpy as np
 
 PROBLEM_DIR = Path(__file__).parent.parent / "problems" / "matmul"
-TEST_SIZES = [2, 4, 8, 16, 32]
+# Keep first 5 sizes identical to prior version so existing tests are preserved;
+# add 7 more with varied (prime / non-pow2 / larger) sizes.
+TEST_SIZES = [2, 4, 8, 16, 32, 1, 3, 7, 15, 23, 48, 64]
 PERF_SIZE = 1024
 SEED = 42
 

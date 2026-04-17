@@ -125,6 +125,8 @@ def main() -> None:
     tests_dir.mkdir(parents=True, exist_ok=True)
 
     # Define test cases
+    # Keep first 5 identical to prior version so existing tests are preserved;
+    # add 7 more covering all-missing, asymmetric insert/lookup ratios, and larger sizes.
     test_configs = [
         # (n_insert, n_lookup, kwargs, description)
         (10, 10, {"all_present": True}, "10 inserts, 10 lookups (all present)"),
@@ -134,6 +136,17 @@ def main() -> None:
         (100, 100, {"all_present": True, "duplicate_keys": True},
          "100 inserts with duplicates, 100 lookups"),
         (1000, 1000, {"all_present": True}, "1000 inserts, 1000 lookups"),
+        (500, 500, {"all_present": True}, "500 inserts, 500 lookups (all present)"),
+        (200, 200, {"all_present": False, "missing_fraction": 1.0},
+         "200 inserts, 200 lookups (all missing)"),
+        (20, 100, {"all_present": True, "duplicate_keys": True},
+         "20 inserts with duplicates, 100 lookups (heavy lookups)"),
+        (2000, 500, {"all_present": True}, "2000 inserts, 500 lookups (insert-heavy)"),
+        (500, 2000, {"all_present": True}, "500 inserts, 2000 lookups (lookup-heavy)"),
+        (300, 600, {"all_present": False, "missing_fraction": 0.2},
+         "300 inserts, 600 lookups (~20% missing)"),
+        (200, 500, {"all_present": False, "missing_fraction": 0.8},
+         "200 inserts, 500 lookups (~80% missing)"),
     ]
 
     # Generate test inputs

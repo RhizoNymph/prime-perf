@@ -17,12 +17,21 @@ PROBLEM_DIR = Path(__file__).parent.parent / "problems" / "nbody"
 SEED = 42
 
 # Test cases: (N, steps, dt)
+# Keep first 5 identical to prior version so existing tests are preserved;
+# add 7 more covering 2-body, larger N, and varied step/dt combos.
 TEST_CASES = [
     (3, 1, 0.01),      # minimal
     (3, 10, 0.001),     # more steps, smaller dt
     (10, 5, 0.01),      # medium
     (20, 3, 0.01),      # more bodies
     (5, 50, 0.001),     # many steps
+    (2, 1, 0.01),       # 2-body
+    (4, 20, 0.005),     # small N, many steps
+    (50, 2, 0.01),      # medium-large N, few steps
+    (100, 1, 0.01),     # large N, single step
+    (8, 100, 0.0001),   # very small dt, many steps
+    (30, 5, 0.01),      # moderate everything
+    (15, 20, 0.005),    # balanced
 ]
 
 # Perf input

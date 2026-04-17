@@ -74,6 +74,59 @@ def make_large_random(rng: np.random.Generator) -> bytes:
     return struct.pack("<i", n) + values.tobytes()
 
 
+def make_already_sorted(rng: np.random.Generator) -> bytes:
+    """Test 5: N=200, already sorted ascending."""
+    n = 200
+    values = np.sort(rng.uniform(-1000.0, 1000.0, size=n).astype(np.float32))
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_reverse_sorted(rng: np.random.Generator) -> bytes:
+    """Test 6: N=200, reverse sorted."""
+    n = 200
+    values = np.sort(rng.uniform(-1000.0, 1000.0, size=n).astype(np.float32))[::-1].copy()
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_trivial_single(rng: np.random.Generator) -> bytes:
+    """Test 7: N=1, trivial single-element."""
+    n = 1
+    values = rng.uniform(-100.0, 100.0, size=n).astype(np.float32)
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_pair(rng: np.random.Generator) -> bytes:
+    """Test 8: N=2, two elements."""
+    n = 2
+    values = rng.uniform(-100.0, 100.0, size=n).astype(np.float32)
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_all_nan(rng: np.random.Generator) -> bytes:
+    """Test 9: N=30, all NaN (stability of NaN ordering)."""
+    n = 30
+    values = np.full(n, float("nan"), dtype=np.float32)
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_zeros_mix(rng: np.random.Generator) -> bytes:
+    """Test 10: N=60, heavy mix of +0.0 and -0.0 with small values."""
+    n = 60
+    values = rng.uniform(-5.0, 5.0, size=n).astype(np.float32)
+    # Sprinkle in many signed zeros
+    for i in range(0, n, 2):
+        values[i] = np.float32(-0.0 if i % 4 == 0 else 0.0)
+    return struct.pack("<i", n) + values.tobytes()
+
+
+def make_many_duplicates(rng: np.random.Generator) -> bytes:
+    """Test 11: N=500, heavy duplicates drawn from a small value pool."""
+    n = 500
+    pool = rng.uniform(-50.0, 50.0, size=15).astype(np.float32)
+    values = pool[rng.integers(0, len(pool), size=n)]
+    return struct.pack("<i", n) + values.tobytes()
+
+
 def make_perf_input(rng: np.random.Generator) -> bytes:
     """Perf input: N=1,000,000 with ~0.1% NaN and some inf."""
     n = 1_000_000
@@ -110,6 +163,13 @@ def main() -> None:
         make_all_same,
         make_special_values,
         make_large_random,
+        make_already_sorted,
+        make_reverse_sorted,
+        make_trivial_single,
+        make_pair,
+        make_all_nan,
+        make_zeros_mix,
+        make_many_duplicates,
     ]
 
     # Compile C reference

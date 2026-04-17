@@ -14,12 +14,21 @@ from pathlib import Path
 import numpy as np
 
 PROBLEM_DIR = Path(__file__).parent.parent / "problems" / "stencil"
+# Keep first 5 entries identical to prior version so existing tests are preserved;
+# add 7 more with non-square shapes, iters=0 identity, and larger grids.
 TEST_PARAMS = [
     (8, 8, 1),
     (8, 8, 10),
     (16, 16, 5),
     (32, 32, 3),
     (64, 64, 1),
+    (16, 8, 5),
+    (8, 16, 5),
+    (5, 5, 0),
+    (48, 16, 3),
+    (16, 48, 3),
+    (128, 128, 2),
+    (24, 40, 7),
 ]
 PERF_W = 1024
 PERF_H = 1024
