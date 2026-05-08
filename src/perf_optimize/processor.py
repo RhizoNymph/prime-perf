@@ -6,7 +6,7 @@ Decoupled from the verifiers SDK -- operates on plain dicts and dataclasses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -21,12 +21,12 @@ from .exceptions import (
 )
 from .prompts import (
     format_compile_error,
+    format_correctness_feedback,
     format_no_code_found,
     format_perf_feedback,
     format_test_failure,
 )
 from .reward import PERF_WEIGHT_MAP, compute_weighted_improvement
-from .sandbox import PerfSandbox
 from .types import (
     CompilationFailure,
     CompilationSuccess,
@@ -34,6 +34,9 @@ from .types import (
     TestReport,
     TestResult,
 )
+
+if TYPE_CHECKING:
+    from .sandbox import PerfSandbox
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +74,8 @@ class TurnProcessor:
         best_wall_clock_ms: float | None,
         turn: int,
         max_turns: int,
+        feedback_mode: str = "full",
+        selection_metric: str = "counter_reward",
     ) -> TurnOutcome:
         """Process a single agent turn through the compile/test/measure pipeline.
 
@@ -87,6 +92,9 @@ class TurnProcessor:
             best_wall_clock_ms: Best wall clock time seen so far, or None.
             turn: Current turn number.
             max_turns: Maximum number of turns.
+            feedback_mode: ``"full"`` shows performance counters; ``"correctness"``
+                hides them for benchmark-style evaluation.
+            selection_metric: Metric used to keep the best correct submission.
 
         Returns:
             TurnOutcome with feedback string and state update dict.
@@ -160,15 +168,23 @@ class TurnProcessor:
                 updates["best_perf_dict"] = agent_perf
                 updates["best_wall_clock_ms"] = result.wall_clock_ms
             else:
-                new_score = compute_weighted_improvement(ref_perf, agent_perf)
-                best_score = compute_weighted_improvement(ref_perf, best_perf_dict)
-                if new_score > best_score:
+                if _is_better_submission(
+                    selection_metric=selection_metric,
+                    ref_perf=ref_perf,
+                    agent_perf=agent_perf,
+                    agent_wall_clock_ms=result.wall_clock_ms,
+                    best_perf_dict=best_perf_dict,
+                    best_wall_clock_ms=best_wall_clock_ms,
+                ):
                     updates["best_perf_dict"] = agent_perf
                     updates["best_wall_clock_ms"] = result.wall_clock_ms
 
-            feedback = format_perf_feedback(
-                agent_perf, ref_perf, turn, max_turns, rewarded_counters=_REWARDED_COUNTERS
-            )
+            if feedback_mode == "correctness":
+                feedback = format_correctness_feedback(turn, max_turns)
+            else:
+                feedback = format_perf_feedback(
+                    agent_perf, ref_perf, turn, max_turns, rewarded_counters=_REWARDED_COUNTERS
+                )
         else:
             detail = f": {perf_error}" if perf_error else ""
             feedback = (
@@ -177,3 +193,29 @@ class TurnProcessor:
             )
 
         return TurnOutcome(feedback=feedback, state_updates=updates)
+
+
+def _is_better_submission(
+    *,
+    selection_metric: str,
+    ref_perf: dict[str, float],
+    agent_perf: dict[str, float],
+    agent_wall_clock_ms: float | None,
+    best_perf_dict: dict[str, float],
+    best_wall_clock_ms: float | None,
+) -> bool:
+    """Return whether the new correct submission should replace the current best."""
+    if selection_metric == "wall_clock_ms":
+        return (
+            agent_wall_clock_ms is not None
+            and (best_wall_clock_ms is None or agent_wall_clock_ms < best_wall_clock_ms)
+        )
+
+    if selection_metric != "counter_reward":
+        agent_value = agent_perf.get(selection_metric)
+        best_value = best_perf_dict.get(selection_metric)
+        return agent_value is not None and (best_value is None or agent_value < best_value)
+
+    new_score = compute_weighted_improvement(ref_perf, agent_perf)
+    best_score = compute_weighted_improvement(ref_perf, best_perf_dict)
+    return new_score > best_score

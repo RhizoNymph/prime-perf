@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from perf_optimize.processor import TurnOutcome, TurnProcessor, _REWARDED_COUNTERS
+from perf_optimize.processor import _REWARDED_COUNTERS, TurnOutcome, TurnProcessor
 from perf_optimize.types import (
     CompilationFailure,
     CompilationOutcome,
@@ -162,6 +162,70 @@ class TestPerfSuccess:
         outcome = await processor.process(code="int main() {}", **kwargs)
         assert "best_perf_dict" not in outcome.state_updates
 
+    @pytest.mark.asyncio
+    async def test_correctness_feedback_hides_counters(
+        self, processor: TurnProcessor, mock_sandbox: AsyncMock
+    ) -> None:
+        mock_sandbox.compile_and_run.return_value = ExecutionResult(
+            compilation=CompilationSuccess(),
+            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
+            perf_counters=PerfCounters(cycles=5_000.0, instructions=15_000.0),
+            wall_clock_ms=1.5,
+        )
+        outcome = await processor.process(
+            code="int main() {}",
+            **_BASE_KWARGS,
+            feedback_mode="correctness",
+        )
+        assert "All tests passed" in outcome.feedback
+        assert "cycles" not in outcome.feedback
+        mock_sandbox.compile_and_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_benchmark_selection_uses_cycles(
+        self, processor: TurnProcessor, mock_sandbox: AsyncMock
+    ) -> None:
+        mock_sandbox.compile_and_run.return_value = ExecutionResult(
+            compilation=CompilationSuccess(),
+            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
+            perf_counters=PerfCounters(cycles=4_000.0, instructions=15_000.0),
+            wall_clock_ms=9.0,
+        )
+        kwargs = {
+            **_BASE_KWARGS,
+            "best_perf_dict": {"cycles": 5_000.0, "instructions": 10_000.0},
+            "best_wall_clock_ms": 1.0,
+        }
+        outcome = await processor.process(
+            code="int main() {}",
+            **kwargs,
+            selection_metric="cycles",
+        )
+        assert outcome.state_updates["best_perf_dict"]["cycles"] == 4_000.0
+
+    @pytest.mark.asyncio
+    async def test_benchmark_selection_can_use_wall_clock(
+        self, processor: TurnProcessor, mock_sandbox: AsyncMock
+    ) -> None:
+        mock_sandbox.compile_and_run.return_value = ExecutionResult(
+            compilation=CompilationSuccess(),
+            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
+            perf_counters=PerfCounters(cycles=9_000.0, instructions=15_000.0),
+            wall_clock_ms=0.8,
+        )
+        kwargs = {
+            **_BASE_KWARGS,
+            "best_perf_dict": {"cycles": 5_000.0, "instructions": 10_000.0},
+            "best_wall_clock_ms": 1.0,
+        }
+        outcome = await processor.process(
+            code="int main() {}",
+            **kwargs,
+            selection_metric="wall_clock_ms",
+        )
+        assert outcome.state_updates["best_perf_dict"]["cycles"] == 9_000.0
+        assert outcome.state_updates["best_wall_clock_ms"] == 0.8
+
 
 class TestPerfMeasurementFailure:
     @pytest.mark.asyncio
@@ -184,7 +248,7 @@ class TestRewardedCounters:
     def test_rewarded_counters_matches_weight_map(self) -> None:
         from perf_optimize.reward import PERF_WEIGHT_MAP
 
-        assert _REWARDED_COUNTERS == frozenset(PERF_WEIGHT_MAP)
+        assert frozenset(PERF_WEIGHT_MAP) == _REWARDED_COUNTERS
 
 
 class TestTurnOutcome:

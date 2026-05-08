@@ -8,6 +8,7 @@ from perf_optimize.reward import (
     PERF_WEIGHT_MAP,
     compute_weighted_improvement,
     correctness_gate,
+    direct_speedup_reward,
     perf_reward,
 )
 
@@ -222,3 +223,38 @@ class TestPerfReward:
             "reference_perf": {"cycles": 10000},
         }
         assert perf_reward(state) == 0.0
+
+
+class TestDirectSpeedupReward:
+    """Tests for benchmark-style direct speedup reward."""
+
+    def test_cycles_speedup(self) -> None:
+        state = {
+            "benchmark_metric": "cycles",
+            "best_perf_dict": {"cycles": 5_000.0},
+            "reference_perf": {"cycles": 10_000.0},
+        }
+        assert direct_speedup_reward(state) == pytest.approx(0.5)
+
+    def test_wall_clock_speedup(self) -> None:
+        state = {
+            "benchmark_metric": "wall_clock_ms",
+            "best_wall_clock_ms": 25.0,
+            "reference_wall_clock_ms": 100.0,
+        }
+        assert direct_speedup_reward(state) == pytest.approx(0.75)
+
+    def test_regression_floors_at_zero(self) -> None:
+        state = {
+            "benchmark_metric": "cycles",
+            "best_perf_dict": {"cycles": 12_000.0},
+            "reference_perf": {"cycles": 10_000.0},
+        }
+        assert direct_speedup_reward(state) == 0.0
+
+    def test_missing_reference_returns_zero(self) -> None:
+        state = {
+            "benchmark_metric": "cycles",
+            "best_perf_dict": {"cycles": 5_000.0},
+        }
+        assert direct_speedup_reward(state) == 0.0

@@ -89,6 +89,36 @@ env = load_environment(
 )
 ```
 
+### Benchmark Mode
+
+Use benchmark mode for post-training evaluation when you want to hide the dense
+training-time performance feedback from the model. Candidate code still goes through
+the same sandboxed compile/test/measure path (`PerfSandbox.compile_and_run()` with
+bubblewrap, taskset, timeouts, and resource limits), but passing submissions only
+receive correctness feedback during the rollout.
+
+```python
+from perf_optimize import load_benchmark_environment
+
+env = load_benchmark_environment(
+    language="c",
+    max_turns=5,
+    benchmark_metric="cycles",
+)
+```
+
+Benchmark scoring uses `direct_speedup_reward`, gated behind correctness:
+
+```text
+(reference_metric - candidate_metric) / reference_metric
+```
+
+The default benchmark metric is `cycles`, read from the same `perf stat` counters
+as training. `wall_clock_ms` is also supported when the problem bank provides a
+`reference_wall_clock_ms` baseline. The initial eval config uses the current problem
+bank; for post-training claims, point `problems_dir` or `problems` at a held-out
+benchmark set.
+
 ### Run Evaluations
 
 Use `prime eval run` to evaluate any model against the environment:
@@ -103,6 +133,12 @@ prime eval run perf-optimize -e haiku \
 
 # View results
 prime eval tui
+```
+
+Run the benchmark-mode eval config with:
+
+```bash
+prime eval run configs/eval/perf-optimize-benchmark.toml
 ```
 
 ### Run Tests
@@ -263,6 +299,9 @@ The environment accepts these arguments via the `args` field in the training con
 | `language` | string | `"c"` | Target language: `"c"`, `"rust"`, `"python"`, `"typescript"` |
 | `max_turns` | int | `5` | Max optimization turns per problem |
 | `problems` | list | all | Filter to specific problems: `["matmul", "sort", ...]` |
+| `feedback_mode` | string | `"full"` | `"full"` shows counter feedback; `"correctness"` hides counters for benchmark eval |
+| `reward_mode` | string | `"training"` | `"training"` uses weighted counter reward; `"benchmark"` uses direct speedup reward |
+| `benchmark_metric` | string | `"cycles"` | Direct metric for benchmark reward, such as `"cycles"` or `"wall_clock_ms"` |
 
 ### Monitoring
 
@@ -289,15 +328,20 @@ Reward is gated behind correctness:
 
 Counter weights automatically renormalize when a counter is unavailable on the hardware (e.g. AMD lacks `LLC-load-misses`; its weight redistributes to the remaining counters).
 
+Benchmark mode replaces the weighted counter reward with direct speedup on
+`benchmark_metric`, while keeping the same correctness gate. This makes the training
+environment and post-training evaluation separable: train with rich counter feedback,
+then evaluate with hidden counters and a direct performance metric.
+
 ## Project Structure
 
 ```
 src/perf_optimize/
-├── __init__.py     # load_environment() entry point
+├── __init__.py     # load_environment() and load_benchmark_environment()
 ├── env.py          # PerfOptimizeEnv (verifiers MultiTurnEnv)
 ├── processor.py    # TurnProcessor: compile -> test -> measure
 ├── sandbox.py      # PerfSandbox: async bwrap + perf stat
-├── reward.py       # Weighted counter improvement
+├── reward.py       # Weighted counter improvement and direct speedup
 ├── types.py        # PerfCounters, ExecutionResult, etc.
 ├── counters.py     # AMD Zen / Intel Core hardware profiles
 ├── languages.py    # C, Rust, Python, TypeScript configs
