@@ -219,3 +219,9 @@ load_environment(language, max_turns)
 - entry_points: [build_dataset_rows, load_problem, load_problem_with_reference]
 - depends_on: [languages, type_system]
 - doc: docs/features/problem_bank.md
+
+### heldout_evaluation
+- description: After-rollout held-out evaluation pass that recompiles the best correct candidate against an out-of-distribution test set + perf input, surfacing in-dist vs. held-out divergence as weight=0 metrics.
+- entry_points: [PerfOptimizeEnv._run_heldout_pass, _attach_heldout_metrics, heldout module]
+- depends_on: [verifiers_environment, sandbox, problem_bank]
+- doc: docs/features/heldout_evaluation.md
