@@ -9,4 +9,20 @@ wheels/
 # Virtual environments
 .venv
 
-.claude/worktrees
+.claude/
+.prime
+
+# Prime lab generated files
+configs/eval/minimal.toml
+configs/eval/multi-env.toml
+configs/gepa/
+configs/prime-rl/wiki-search.toml
+configs/endpoints.toml
+environments
+
+# Perf references
+*.bin
+problems/*/*.bin
+
+AGENTS.md
+CLAUDE.md
