@@ -8,9 +8,11 @@ keyword arguments matching the verifiers Rubric signature introspection
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Default weights for performance counter improvement scoring.
 # Keys match PerfCounters.to_dict() field names.
@@ -107,3 +109,35 @@ def perf_reward(state: dict[str, Any], **_kwargs: Any) -> float:
     if best is None or ref is None:
         return 0.0
     return compute_weighted_improvement(ref, best)
+
+
+def direct_speedup_reward(state: dict[str, Any], **_kwargs: Any) -> float:
+    """Reward component for benchmark-style direct performance evaluation.
+
+    Uses ``state["benchmark_metric"]`` to select the direct metric:
+    - ``"cycles"`` reads candidate/reference CPU cycles from perf counters.
+    - ``"wall_clock_ms"`` reads candidate/reference wall-clock timing.
+
+    The return value is fractional speedup ``(reference - candidate) / reference``,
+    floored at 0.0 so regressions do not receive positive performance credit.
+    Correctness is handled separately by ``correctness_gate``.
+    """
+    metric = state.get("benchmark_metric", "cycles")
+
+    if metric == "wall_clock_ms":
+        reference = state.get("reference_wall_clock_ms")
+        candidate = state.get("best_wall_clock_ms")
+    else:
+        reference_perf = state.get("reference_perf") or {}
+        best_perf = state.get("best_perf_dict") or {}
+        reference = reference_perf.get(metric)
+        candidate = best_perf.get(metric)
+
+    if reference is None or candidate is None:
+        return 0.0
+    if reference <= 0:
+        return 0.0
+    if not math.isfinite(reference) or not math.isfinite(candidate):
+        return 0.0
+
+    return max(0.0, (reference - candidate) / reference)

@@ -5,7 +5,10 @@ All functions are pure string formatters with no external dependencies.
 
 from __future__ import annotations
 
-from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Set as AbstractSet
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are a performance optimization expert. Your task is to optimize the given \
@@ -41,10 +44,54 @@ When you are satisfied with your optimization, submit your final version with:
 - Only counters available on the current hardware are shown (varies by CPU architecture).\
 """
 
+BENCHMARK_SYSTEM_PROMPT_TEMPLATE = """\
+You are a performance optimization expert. Your task is to optimize the given \
+reference solution to run as fast as possible while maintaining correctness.
 
-def format_system_prompt(language: str, max_turns: int) -> str:
+**Language:** {language}
+**Turns remaining:** {max_turns}
+
+## Interaction Protocol
+
+On each turn, submit your optimized code inside a `<code>` tag:
+
+```
+<code lang="{language}">
+// your optimized solution here
+</code>
+```
+
+Your code will be compiled, tested for correctness, and measured in a sandbox. \
+Feedback will report correctness only; final scoring uses held-out performance \
+measurement.
+
+When you are satisfied with your optimization, submit your final version with:
+
+```
+<submit/>
+```
+
+## Tips
+
+- Focus on algorithmic improvements, memory access patterns, and cache efficiency.
+- The reference solution is intentionally naive — there is significant room for improvement.
+- Preserve the exact input/output format and correctness behavior.\
+"""
+
+
+def format_system_prompt(
+    language: str,
+    max_turns: int,
+    *,
+    feedback_mode: str = "full",
+) -> str:
     """Format the system prompt with language and turn count."""
-    return SYSTEM_PROMPT_TEMPLATE.format(language=language, max_turns=max_turns)
+    template = (
+        BENCHMARK_SYSTEM_PROMPT_TEMPLATE
+        if feedback_mode == "correctness"
+        else SYSTEM_PROMPT_TEMPLATE
+    )
+    return template.format(language=language, max_turns=max_turns)
 
 
 def format_compile_error(stderr: str, turn: int, max_turns: int) -> str:
@@ -117,6 +164,15 @@ def format_perf_feedback(
         "You can submit your solution with `<submit/>` or try to optimize further.",
     ])
     return "\n".join(lines)
+
+
+def format_correctness_feedback(turn: int, max_turns: int) -> str:
+    """Format benchmark feedback when tests pass but perf counters are hidden."""
+    return "\n".join([
+        f"**All tests passed** (turn {turn}/{max_turns})",
+        "",
+        "You can submit your solution with `<submit/>` or try to optimize further.",
+    ])
 
 
 def format_no_code_found(turn: int, max_turns: int) -> str:

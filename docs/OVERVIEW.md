@@ -190,6 +190,12 @@ load_environment(language, max_turns)
 - depends_on: [sandbox, problem_bank, reward, prompts, turn_processor]
 - doc: docs/features/verifiers_environment.md
 
+### benchmark_environment
+- description: Correctness-only benchmark mode with direct speedup scoring for post-training eval
+- entry_points: [load_benchmark_environment, direct_speedup_reward]
+- depends_on: [verifiers_environment, sandbox, reward]
+- doc: docs/features/benchmark_environment.md
+
 ### turn_processor
 - description: SDK-independent turn processing logic (compile, test, measure, feedback)
 - entry_points: [TurnProcessor, TurnOutcome]

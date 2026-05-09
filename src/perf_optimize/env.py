@@ -10,23 +10,25 @@ import base64
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import structlog
 import verifiers as vf
 from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, State
 
 from .config import SandboxConfig, _detect_unshare_net
 from .languages import Language
 from .problems import build_dataset_rows
 from .processor import TurnProcessor
 from .prompts import format_system_prompt
-from .reward import correctness_gate, perf_reward
+from .reward import correctness_gate, direct_speedup_reward, perf_reward
 from .sandbox import PerfSandbox
 
 logger = structlog.get_logger(__name__)
+
+if TYPE_CHECKING:
+    from verifiers.types import Messages, State
 
 
 class PerfOptimizeState(TypedDict):
@@ -40,6 +42,8 @@ class PerfOptimizeState(TypedDict):
     reference_perf: dict[str, float] | None
     best_perf_dict: dict[str, float] | None
     best_wall_clock_ms: float | None
+    reference_wall_clock_ms: float | None
+    benchmark_metric: str
     submitted: bool
     compile_failures: int
     test_failures: int
@@ -131,6 +135,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
         max_turns: int = 5,
         problems_dir: Path | None = None,
         problems: list[str] | None = None,
+        feedback_mode: str = "full",
+        reward_mode: str = "training",
+        benchmark_metric: str = "cycles",
     ) -> None:
         if problems_dir is None:
             problems_dir = _default_problems_dir()
@@ -148,6 +155,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
         self._processor = TurnProcessor(self._sandbox)
         self._language = language
         self._problem_filter = problems
+        self._feedback_mode = feedback_mode
+        self._reward_mode = reward_mode
+        self._benchmark_metric = benchmark_metric
 
         profile_name = self._sandbox_config.hardware_profile.name
         rows = build_dataset_rows(problems_dir, language, profile_name)
@@ -172,10 +182,16 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         dataset = HFDataset.from_list(rows)
 
-        system_prompt = format_system_prompt(language.value, max_turns)
+        system_prompt = format_system_prompt(
+            language.value,
+            max_turns,
+            feedback_mode=feedback_mode,
+        )
+
+        reward_func = direct_speedup_reward if reward_mode == "benchmark" else perf_reward
 
         rubric = Rubric(
-            funcs=[correctness_gate, perf_reward],
+            funcs=[correctness_gate, reward_func],
             weights=[1.0, 1.0],
         )
 
@@ -205,6 +221,8 @@ class PerfOptimizeEnv(MultiTurnEnv):
             tolerance=info.get("tolerance"),
         )
         state["reference_perf"] = info.get("reference_perf")
+        state["reference_wall_clock_ms"] = info.get("reference_wall_clock_ms")
+        state["benchmark_metric"] = getattr(self, "_benchmark_metric", "cycles")
 
         # Tracking fields
         state["best_perf_dict"] = None
@@ -288,6 +306,12 @@ class PerfOptimizeEnv(MultiTurnEnv):
             best_wall_clock_ms=state.get("best_wall_clock_ms"),
             turn=turn,
             max_turns=max_turns,
+            feedback_mode=getattr(self, "_feedback_mode", "full"),
+            selection_metric=(
+                getattr(self, "_benchmark_metric", "cycles")
+                if getattr(self, "_reward_mode", "training") == "benchmark"
+                else "counter_reward"
+            ),
         )
 
         # Apply state mutations from the processor

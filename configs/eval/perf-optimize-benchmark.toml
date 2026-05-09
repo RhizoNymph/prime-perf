@@ -1,0 +1,16 @@
+endpoints_path = "../endpoints.toml"
+
+endpoint_id = "gpt-5-mini"
+save_results = true
+rollouts_per_example = 3
+
+[[eval]]
+env_id = "perf-optimize"
+num_examples = 5
+
+[eval.env_args]
+language = "c"
+max_turns = 5
+feedback_mode = "correctness"
+reward_mode = "benchmark"
+benchmark_metric = "cycles"
