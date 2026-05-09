@@ -23,6 +23,9 @@ environments
 # Perf references
 *.bin
 problems/*/*.bin
+# Held-out test/perf bins are part of the eval contract and must be tracked.
+!problems/*/tests_heldout/*.bin
+!problems/*/perf_inputs_heldout/*.bin
 
 AGENTS.md
 CLAUDE.md
