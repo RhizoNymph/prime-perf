@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate test inputs and expected outputs for the nbody problem.
 
-Compiles the C reference and runs it to produce expected outputs.
+Compiles the C reference and runs it. Writes sizes.toml plus per-size perf
+inputs under perf_inputs/.
 """
 
 from __future__ import annotations
@@ -34,10 +35,14 @@ TEST_CASES = [
     (15, 20, 0.005),    # balanced
 ]
 
-# Perf input
-PERF_N = 1024
+# Perf sizes: (label, N). Hold steps and dt constant so n parameterizes scaling.
 PERF_STEPS = 10
 PERF_DT = 0.01
+PERF_SIZES = [
+    ("small", 512),
+    ("medium", 1024),
+    ("large", 2048),
+]
 
 # Held-out distribution choice for nbody:
 #   In-dist tests use positions sampled uniformly in [-1,1]^3. Held-out uses
@@ -105,10 +110,22 @@ def make_heldout_input(
     return header + body_data.tobytes()
 
 
+def write_sizes_toml(path: Path, sizes: list[tuple[str, int]]) -> None:
+    lines: list[str] = []
+    for label, n in sizes:
+        lines.append("[[sizes]]")
+        lines.append(f'label = "{label}"')
+        lines.append(f"n = {n}")
+        lines.append("")
+    path.write_text("\n".join(lines))
+
+
 def main() -> None:
     rng = np.random.default_rng(SEED)
     tests_dir = PROBLEM_DIR / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
+    perf_dir = PROBLEM_DIR / "perf_inputs"
+    perf_dir.mkdir(parents=True, exist_ok=True)
 
     # Compile C reference
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -146,10 +163,14 @@ def main() -> None:
                 f"output={len(result.stdout)} bytes ({expected_floats} floats)"
             )
 
-        # Generate perf input
-        perf_input = make_input(PERF_N, PERF_STEPS, PERF_DT, rng)
-        (PROBLEM_DIR / "perf_input.bin").write_bytes(perf_input)
-        print(f"  perf_input: N={PERF_N}, steps={PERF_STEPS}, {len(perf_input)} bytes")
+        # Generate per-size perf inputs (steps + dt held constant)
+        for label, n in PERF_SIZES:
+            perf_input = make_input(n, PERF_STEPS, PERF_DT, rng)
+            (perf_dir / f"{label}.bin").write_bytes(perf_input)
+            print(
+                f"  perf_input[{label}]: N={n}, steps={PERF_STEPS}, dt={PERF_DT}, "
+                f"{len(perf_input)} bytes"
+            )
 
         # Held-out tests + perf input.
         # Distribution: clustered (two Gaussian groups) instead of uniform cube.
@@ -184,7 +205,16 @@ def main() -> None:
             f"steps={HELDOUT_PERF_STEPS}, {len(held_perf_input)} bytes"
         )
 
-    print(f"Generated {len(TEST_CASES)} tests + perf input for nbody")
+    write_sizes_toml(PROBLEM_DIR / "sizes.toml", PERF_SIZES)
+    legacy = PROBLEM_DIR / "perf_input.bin"
+    if legacy.exists():
+        legacy.unlink()
+        print(f"  removed legacy {legacy.name}")
+
+    print(
+        f"Generated {len(TEST_CASES)} tests + {len(PERF_SIZES)} perf inputs "
+        f"+ {len(HELDOUT_TEST_CASES)} held-out tests for nbody"
+    )
 
 
 if __name__ == "__main__":

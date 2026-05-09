@@ -3,6 +3,11 @@
 Pure functions — no sandbox or verifiers dependency. Reward functions accept
 keyword arguments matching the verifiers Rubric signature introspection
 (state, info, completion, etc.).
+
+In sized-perf mode, the headline metric is *cycles at the largest input
+size*. ``benchmark_metric="cycles"`` is redefined to mean "cycles at
+largest"; ``benchmark_metric="wall_clock_ms"`` likewise reads
+``best_wall_clock_ms_by_size[<largest>]``.
 """
 
 from __future__ import annotations
@@ -98,14 +103,38 @@ def correctness_gate(state: dict[str, Any], **_kwargs: Any) -> float:
     return -1.0
 
 
-def perf_reward(state: dict[str, Any], **_kwargs: Any) -> float:
-    """Reward component: weighted improvement from the best correct submission.
+def _largest_label(state: dict[str, Any]) -> str | None:
+    """Pick the size label with the largest ``n`` from ``state["perf_inputs"]``."""
+    pis = state.get("perf_inputs") or []
+    if not pis:
+        return None
+    largest = max(pis, key=lambda p: p[1])
+    return largest[0]
 
-    Reads ``state["best_perf_dict"]`` and ``state["reference_perf"]``.
-    Returns 0.0 if no correct submission or no reference perf available.
+
+def _safe_speedup(reference: float | None, candidate: float | None) -> float:
+    """Fractional speedup ``(reference - candidate) / reference``, floored at 0."""
+    if reference is None or candidate is None:
+        return 0.0
+    if not math.isfinite(reference) or not math.isfinite(candidate):
+        return 0.0
+    if reference <= 0:
+        return 0.0
+    return max(0.0, (reference - candidate) / reference)
+
+
+def perf_reward(state: dict[str, Any], **_kwargs: Any) -> float:
+    """Reward component: weighted improvement at the largest size.
+
+    Reads per-size counters from
+    ``state["best_perf_by_size"]`` and ``state["reference_perf_by_size"]``,
+    keyed on the largest-size label. Returns 0.0 if either is missing.
     """
-    best = state.get("best_perf_dict")
-    ref = state.get("reference_perf")
+    label = _largest_label(state)
+    if label is None:
+        return 0.0
+    best = (state.get("best_perf_by_size") or {}).get(label)
+    ref = (state.get("reference_perf_by_size") or {}).get(label)
     if best is None or ref is None:
         return 0.0
     return compute_weighted_improvement(ref, best)
@@ -114,30 +143,23 @@ def perf_reward(state: dict[str, Any], **_kwargs: Any) -> float:
 def direct_speedup_reward(state: dict[str, Any], **_kwargs: Any) -> float:
     """Reward component for benchmark-style direct performance evaluation.
 
-    Uses ``state["benchmark_metric"]`` to select the direct metric:
-    - ``"cycles"`` reads candidate/reference CPU cycles from perf counters.
-    - ``"wall_clock_ms"`` reads candidate/reference wall-clock timing.
+    Headline metric (``benchmark_metric``):
+    - ``"cycles"`` → cycles at the largest input size.
+    - ``"wall_clock_ms"`` → wall-clock at the largest input size.
 
-    The return value is fractional speedup ``(reference - candidate) / reference``,
-    floored at 0.0 so regressions do not receive positive performance credit.
-    Correctness is handled separately by ``correctness_gate``.
+    Returns fractional speedup, floored at 0.0 so regressions don't earn
+    positive credit. Correctness is handled separately by ``correctness_gate``.
     """
     metric = state.get("benchmark_metric", "cycles")
+    label = _largest_label(state)
+    if label is None:
+        return 0.0
 
     if metric == "wall_clock_ms":
-        reference = state.get("reference_wall_clock_ms")
-        candidate = state.get("best_wall_clock_ms")
+        ref = (state.get("reference_wall_clock_ms_by_size") or {}).get(label)
+        cand = (state.get("best_wall_clock_ms_by_size") or {}).get(label)
     else:
-        reference_perf = state.get("reference_perf") or {}
-        best_perf = state.get("best_perf_dict") or {}
-        reference = reference_perf.get(metric)
-        candidate = best_perf.get(metric)
+        ref = ((state.get("reference_perf_by_size") or {}).get(label) or {}).get(metric)
+        cand = ((state.get("best_perf_by_size") or {}).get(label) or {}).get(metric)
 
-    if reference is None or candidate is None:
-        return 0.0
-    if reference <= 0:
-        return 0.0
-    if not math.isfinite(reference) or not math.isfinite(candidate):
-        return 0.0
-
-    return max(0.0, (reference - candidate) / reference)
+    return _safe_speedup(ref, cand)

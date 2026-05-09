@@ -39,7 +39,13 @@ def problem_dir(tmp_path: Path) -> Path:
     (tests / "input_0.bin").write_bytes(b"\x01")
     (tests / "expected_0.bin").write_bytes(b"\x02")
 
-    (d / "perf_input.bin").write_bytes(b"\xff" * 50)
+    # Sized perf inputs (required by the multi-size loader).
+    (d / "sizes.toml").write_text(
+        '[[sizes]]\nlabel = "large"\nn = 1024\n',
+    )
+    perf_inputs = d / "perf_inputs"
+    perf_inputs.mkdir()
+    (perf_inputs / "large.bin").write_bytes(b"\xff" * 50)
 
     ref = d / "reference"
     ref.mkdir()
@@ -47,9 +53,10 @@ def problem_dir(tmp_path: Path) -> Path:
 
     perf_dir = d / "reference_perf"
     perf_dir.mkdir()
-    (perf_dir / "c_amd_zen.json").write_text(json.dumps({
+    (perf_dir / "c_amd_zen_large.json").write_text(json.dumps({
         "cycles": 1_000_000.0,
         "instructions": 2_000_000.0,
+        "wall_clock_ms": 5.0,
     }))
 
     # Held-out fixtures
@@ -184,4 +191,4 @@ class TestBuildDatasetRowsHeldout:
         info = rows[0]["info"]
         assert "test_inputs" in info
         assert "expected_outputs" in info
-        assert "perf_input" in info
+        assert "perf_inputs" in info  # sized layout: list of {label, n, data_b64}

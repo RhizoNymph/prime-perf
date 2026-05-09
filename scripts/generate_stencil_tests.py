@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate test inputs and expected outputs for the stencil problem.
 
-Compiles the C reference and runs it to produce expected outputs.
+Compiles the C reference and runs it. Writes sizes.toml plus per-size perf
+inputs under perf_inputs/.
 """
 
 from __future__ import annotations
@@ -30,9 +31,13 @@ TEST_PARAMS = [
     (128, 128, 2),
     (24, 40, 7),
 ]
-PERF_W = 1024
-PERF_H = 1024
 PERF_ITERS = 100
+# (label, square-grid edge length); n = edge length (W=H=n).
+PERF_SIZES = [
+    ("small", 512),
+    ("medium", 1024),
+    ("large", 1536),
+]
 SEED = 42
 
 # Held-out distribution choice for stencil:
@@ -97,10 +102,22 @@ def make_heldout_perf_input(
     return struct.pack("<iii", w, h, iters) + grid.tobytes()
 
 
+def write_sizes_toml(path: Path, sizes: list[tuple[str, int]]) -> None:
+    lines: list[str] = []
+    for label, n in sizes:
+        lines.append("[[sizes]]")
+        lines.append(f'label = "{label}"')
+        lines.append(f"n = {n}")
+        lines.append("")
+    path.write_text("\n".join(lines))
+
+
 def main() -> None:
     rng = np.random.default_rng(SEED)
     tests_dir = PROBLEM_DIR / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
+    perf_dir = PROBLEM_DIR / "perf_inputs"
+    perf_dir.mkdir(parents=True, exist_ok=True)
 
     # Compile C reference
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -130,11 +147,12 @@ def main() -> None:
                   f"input={len(input_data)} bytes, "
                   f"output={len(result.stdout)} bytes ({expected_floats} floats)")
 
-        # Generate perf input
-        perf_input = make_input(PERF_W, PERF_H, PERF_ITERS, rng)
-        (PROBLEM_DIR / "perf_input.bin").write_bytes(perf_input)
-        print(f"  perf_input: W={PERF_W}, H={PERF_H}, iters={PERF_ITERS}, "
-              f"{len(perf_input)} bytes")
+        # Generate per-size perf inputs (square WxW with PERF_ITERS held constant)
+        for label, n in PERF_SIZES:
+            perf_input = make_input(n, n, PERF_ITERS, rng)
+            (perf_dir / f"{label}.bin").write_bytes(perf_input)
+            print(f"  perf_input[{label}]: W=H={n}, iters={PERF_ITERS}, "
+                  f"{len(perf_input)} bytes")
 
         # Held-out tests + perf input.
         # Distribution: checkerboard / smooth gradient instead of i.i.d.
@@ -171,7 +189,16 @@ def main() -> None:
             f"{len(held_perf_input)} bytes"
         )
 
-    print(f"Generated {len(TEST_PARAMS)} tests + perf input for stencil")
+    write_sizes_toml(PROBLEM_DIR / "sizes.toml", PERF_SIZES)
+    legacy = PROBLEM_DIR / "perf_input.bin"
+    if legacy.exists():
+        legacy.unlink()
+        print(f"  removed legacy {legacy.name}")
+
+    print(
+        f"Generated {len(TEST_PARAMS)} tests + {len(PERF_SIZES)} perf inputs "
+        f"+ {len(HELDOUT_TEST_PARAMS)} held-out tests for stencil"
+    )
 
 
 if __name__ == "__main__":

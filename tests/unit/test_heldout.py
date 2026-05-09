@@ -137,73 +137,86 @@ class TestHeldoutWallClockMs:
 
 
 class TestCyclesSpeedupIndistMinusHeldout:
+    @staticmethod
+    def _state(
+        *,
+        ref_cycles: float | None,
+        best_cycles: float | None,
+        held_ref_cycles: float | None,
+        held_best_cycles: float | None,
+    ) -> dict[str, Any]:
+        """Build a state with sized in-dist fields keyed on a single 'large' entry."""
+        ref_by_size: dict[str, dict[str, float] | None] = {}
+        best_by_size: dict[str, dict[str, float]] = {}
+        if ref_cycles is not None:
+            ref_by_size = {"large": {"cycles": ref_cycles}}
+        if best_cycles is not None:
+            best_by_size = {"large": {"cycles": best_cycles}}
+        return {
+            "perf_inputs": [("large", 1024, b"")],
+            "reference_perf_by_size": ref_by_size,
+            "best_perf_by_size": best_by_size,
+            "reference_heldout_perf": (
+                {"cycles": held_ref_cycles} if held_ref_cycles is not None else None
+            ),
+            "heldout_best_perf": (
+                {"cycles": held_best_cycles} if held_best_cycles is not None else None
+            ),
+        }
+
     def test_perfect_match_returns_zero(self) -> None:
         """In-dist and held-out improvements equal -> divergence is zero."""
-        state = {
-            "reference_perf": {"cycles": 10_000.0},
-            "best_perf_dict": {"cycles": 5_000.0},
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 5_000.0},
-        }
+        state = self._state(
+            ref_cycles=10_000.0, best_cycles=5_000.0,
+            held_ref_cycles=10_000.0, held_best_cycles=5_000.0,
+        )
         assert cycles_speedup_indist_minus_heldout(state) == pytest.approx(0.0)
 
     def test_overfit_gives_positive_divergence(self) -> None:
         """Large in-dist gain, no held-out gain -> positive divergence."""
-        state = {
-            "reference_perf": {"cycles": 10_000.0},
-            "best_perf_dict": {"cycles": 1_000.0},  # 90% speedup
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 10_000.0},  # 0% speedup
-        }
+        state = self._state(
+            ref_cycles=10_000.0, best_cycles=1_000.0,  # 90% speedup
+            held_ref_cycles=10_000.0, held_best_cycles=10_000.0,  # 0% speedup
+        )
         assert cycles_speedup_indist_minus_heldout(state) == pytest.approx(0.9)
 
     def test_held_out_better_gives_negative_divergence(self) -> None:
         """Held-out outperforms in-dist -> negative divergence (allowed)."""
-        state = {
-            "reference_perf": {"cycles": 10_000.0},
-            "best_perf_dict": {"cycles": 8_000.0},  # 20% speedup
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 5_000.0},  # 50% speedup
-        }
+        state = self._state(
+            ref_cycles=10_000.0, best_cycles=8_000.0,  # 20% speedup
+            held_ref_cycles=10_000.0, held_best_cycles=5_000.0,  # 50% speedup
+        )
         assert cycles_speedup_indist_minus_heldout(state) == pytest.approx(-0.3)
 
     def test_held_out_didnt_run_returns_zero(self) -> None:
         """If held-out values are missing/None we cannot compute divergence."""
-        state = {
-            "reference_perf": {"cycles": 10_000.0},
-            "best_perf_dict": {"cycles": 5_000.0},
-            "reference_heldout_perf": None,
-            "heldout_best_perf": None,
-        }
+        state = self._state(
+            ref_cycles=10_000.0, best_cycles=5_000.0,
+            held_ref_cycles=None, held_best_cycles=None,
+        )
         assert cycles_speedup_indist_minus_heldout(state) == 0.0
 
     def test_in_dist_didnt_run_returns_zero(self) -> None:
         """If in-dist values are missing we cannot compute divergence."""
-        state = {
-            "reference_perf": None,
-            "best_perf_dict": None,
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 5_000.0},
-        }
+        state = self._state(
+            ref_cycles=None, best_cycles=None,
+            held_ref_cycles=10_000.0, held_best_cycles=5_000.0,
+        )
         assert cycles_speedup_indist_minus_heldout(state) == 0.0
 
     def test_zero_reference_cycles_returns_zero(self) -> None:
         """Division-by-zero guard on either reference."""
-        state = {
-            "reference_perf": {"cycles": 0.0},
-            "best_perf_dict": {"cycles": 0.0},
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 5_000.0},
-        }
+        state = self._state(
+            ref_cycles=0.0, best_cycles=0.0,
+            held_ref_cycles=10_000.0, held_best_cycles=5_000.0,
+        )
         assert cycles_speedup_indist_minus_heldout(state) == 0.0
 
     def test_regressions_still_yield_floor_difference(self) -> None:
         """Both speedups are floored at 0 before subtraction."""
-        state = {
-            "reference_perf": {"cycles": 10_000.0},
-            "best_perf_dict": {"cycles": 20_000.0},  # would be -1.0, floored to 0
-            "reference_heldout_perf": {"cycles": 10_000.0},
-            "heldout_best_perf": {"cycles": 5_000.0},  # +0.5
-        }
+        state = self._state(
+            ref_cycles=10_000.0, best_cycles=20_000.0,  # -1.0 floored to 0
+            held_ref_cycles=10_000.0, held_best_cycles=5_000.0,  # +0.5
+        )
         # 0.0 - 0.5 = -0.5
         assert cycles_speedup_indist_minus_heldout(state) == pytest.approx(-0.5)

@@ -32,6 +32,15 @@ from .processor import TurnProcessor
 from .prompts import format_system_prompt
 from .reward import correctness_gate, direct_speedup_reward, perf_reward
 from .sandbox import PerfSandbox
+from .scaling import (
+    cycles_speedup_geomean,
+    largest_size_cycles_speedup,
+    largest_size_wall_clock_ms,
+    scaling_exponent_candidate,
+    scaling_exponent_delta,
+    scaling_exponent_reference,
+)
+from .types import SizedPerfInput, SizeSpec
 
 logger = structlog.get_logger(__name__)
 
@@ -40,17 +49,22 @@ if TYPE_CHECKING:
 
 
 class PerfOptimizeState(TypedDict):
-    """Environment-specific state fields set by setup_state."""
+    """Environment-specific state fields set by setup_state.
+
+    Sized perf-input layout: ``perf_inputs`` is a list of (label, n, data)
+    tuples; per-size best tracking via ``best_perf_by_size`` and
+    ``best_wall_clock_ms_by_size``.
+    """
 
     test_inputs: list[bytes]
     expected_outputs: list[bytes]
-    perf_input: bytes
+    perf_inputs: list[tuple[str, int, bytes]]
     comparison: str
     tolerance: float | None
-    reference_perf: dict[str, float] | None
-    best_perf_dict: dict[str, float] | None
-    best_wall_clock_ms: float | None
-    reference_wall_clock_ms: float | None
+    reference_perf_by_size: dict[str, dict[str, float] | None]
+    reference_wall_clock_ms_by_size: dict[str, float | None]
+    best_perf_by_size: dict[str, dict[str, float]]
+    best_wall_clock_ms_by_size: dict[str, float]
     benchmark_metric: str
     submitted: bool
     compile_failures: int
@@ -137,13 +151,24 @@ def _has_submit(text: str) -> bool:
     return _SUBMIT_PATTERN.search(stripped) is not None
 
 
-def _attach_heldout_metrics(rubric: Rubric) -> None:
-    """Attach held-out diagnostic metrics to a rubric (all weight=0).
+def _build_base_rubric(reward_mode: str) -> Rubric:
+    """Build the base rubric (correctness + headline reward)."""
+    reward_func = direct_speedup_reward if reward_mode == "benchmark" else perf_reward
+    return Rubric(funcs=[correctness_gate, reward_func], weights=[1.0, 1.0])
 
-    Kept as a small standalone helper so it merges additively alongside the
-    sibling branches (``feat/scaling-test``, ``feat/ipc-diagnostics``) which
-    each add their own ``_attach_*_metrics`` call near the rubric construction.
-    """
+
+def _attach_scaling_metrics(rubric: Rubric) -> None:
+    """Register weight=0 scaling diagnostics on the rubric."""
+    rubric.add_metric(largest_size_cycles_speedup)
+    rubric.add_metric(largest_size_wall_clock_ms)
+    rubric.add_metric(cycles_speedup_geomean)
+    rubric.add_metric(scaling_exponent_candidate)
+    rubric.add_metric(scaling_exponent_reference)
+    rubric.add_metric(scaling_exponent_delta)
+
+
+def _attach_heldout_metrics(rubric: Rubric) -> None:
+    """Register weight=0 held-out diagnostics on the rubric."""
     rubric.add_metric(heldout_correctness_passed)
     rubric.add_metric(heldout_correctness_pass_rate)
     rubric.add_metric(heldout_cycles_speedup)
@@ -155,8 +180,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
     """Multi-turn environment for LLM code performance optimization.
 
     The agent receives a naive reference solution and submits optimized code.
-    Each submission is compiled, tested, and measured with hardware perf counters.
-    Feedback includes counter values and improvement percentages.
+    Each submission is compiled, tested, and measured with hardware perf counters
+    at multiple input sizes; the headline reward is cycles speedup at the
+    largest size.
 
     Args:
         language: Target programming language.
@@ -201,9 +227,15 @@ class PerfOptimizeEnv(MultiTurnEnv):
         if problems is not None:
             rows = [r for r in rows if r["info"]["problem_name"] in problems]
 
-        # Warn about problems missing reference perf baselines — perf_reward()
-        # returns 0.0 for these, so training degrades to correctness-only.
-        missing = [r["info"]["problem_name"] for r in rows if "reference_perf" not in r["info"]]
+        # Warn about problems missing reference perf baselines at any size.
+        missing = [
+            r["info"]["problem_name"]
+            for r in rows
+            if not any(
+                v is not None
+                for v in (r["info"].get("reference_perf_by_size") or {}).values()
+            )
+        ]
         if missing:
             logger.warning(
                 "problems_missing_baselines",
@@ -224,17 +256,11 @@ class PerfOptimizeEnv(MultiTurnEnv):
             feedback_mode=feedback_mode,
         )
 
-        reward_func = direct_speedup_reward if reward_mode == "benchmark" else perf_reward
-
-        # NOTE (merge): sibling branches ``feat/scaling-test`` and
-        # ``feat/ipc-diagnostics`` will add their own ``_attach_*_metrics(rubric)``
-        # calls right below this construction. Each call should stay on its
-        # own line so the merges remain additive.
-        rubric = Rubric(
-            funcs=[correctness_gate, reward_func],
-            weights=[1.0, 1.0],
-        )
+        rubric = _build_base_rubric(reward_mode)
+        _attach_scaling_metrics(rubric)
         _attach_heldout_metrics(rubric)
+        # Sibling branch ``feat/ipc-diagnostics`` will add
+        # ``_attach_ipc_metrics(rubric)`` after this call.
 
         super().__init__(
             dataset=dataset,
@@ -247,27 +273,41 @@ class PerfOptimizeEnv(MultiTurnEnv):
     async def setup_state(self, state: State, **_kwargs: Any) -> State:
         """Initialize environment-specific tracking in state.
 
-        Decodes base64 test data from info and sets up perf tracking fields.
+        Decodes base64 test data and per-size perf inputs from info.
         """
         info = state["info"]
 
-        # Decode binary test data from base64
         state["test_inputs"] = [base64.b64decode(t) for t in info["test_inputs"]]
         state["expected_outputs"] = [base64.b64decode(t) for t in info["expected_outputs"]]
-        state["perf_input"] = base64.b64decode(info["perf_input"])
+
+        # Sized perf inputs: list of (label, n, data) tuples, sorted by ascending n.
+        perf_inputs_info = info.get("perf_inputs") or []
+        decoded: list[tuple[str, int, bytes]] = []
+        for entry in perf_inputs_info:
+            decoded.append((
+                entry["label"],
+                int(entry["n"]),
+                base64.b64decode(entry["data_b64"]),
+            ))
+        # Defensive sort — generators write in order, but enforce here too.
+        decoded.sort(key=lambda t: t[1])
+        state["perf_inputs"] = decoded
+
         from .comparison import ComparisonConfig, ComparisonMode
 
         state["comparison"] = ComparisonConfig(
             mode=ComparisonMode(info["comparison"]),
             tolerance=info.get("tolerance"),
         )
-        state["reference_perf"] = info.get("reference_perf")
-        state["reference_wall_clock_ms"] = info.get("reference_wall_clock_ms")
+        state["reference_perf_by_size"] = info.get("reference_perf_by_size") or {}
+        state["reference_wall_clock_ms_by_size"] = (
+            info.get("reference_wall_clock_ms_by_size") or {}
+        )
         state["benchmark_metric"] = getattr(self, "_benchmark_metric", "cycles")
 
         # Tracking fields
-        state["best_perf_dict"] = None
-        state["best_wall_clock_ms"] = None
+        state["best_perf_by_size"] = {}
+        state["best_wall_clock_ms_by_size"] = {}
         state["submitted"] = False
         state["compile_failures"] = 0
         state["test_failures"] = 0
@@ -360,15 +400,22 @@ class PerfOptimizeEnv(MultiTurnEnv):
         # Lazily create processor if not set (supports __new__-based test setup)
         if not hasattr(self, "_processor"):
             self._processor = TurnProcessor(self._sandbox)
+
+        # Hydrate state's tuple-encoded perf inputs into SizedPerfInput objects.
+        perf_inputs = [
+            SizedPerfInput(spec=SizeSpec(label=label, n=n), data=data)
+            for label, n, data in state["perf_inputs"]
+        ]
+
         outcome = await self._processor.process(
             code=code,
             test_inputs=state["test_inputs"],
             expected_outputs=state["expected_outputs"],
-            perf_input=state["perf_input"],
+            perf_inputs=perf_inputs,
             comparison=state["comparison"],
-            reference_perf=state.get("reference_perf"),
-            best_perf_dict=state.get("best_perf_dict"),
-            best_wall_clock_ms=state.get("best_wall_clock_ms"),
+            reference_perf_by_size=state.get("reference_perf_by_size"),
+            best_perf_by_size=state.get("best_perf_by_size") or {},
+            best_wall_clock_ms_by_size=state.get("best_wall_clock_ms_by_size") or {},
             turn=turn,
             max_turns=max_turns,
             feedback_mode=getattr(self, "_feedback_mode", "full"),

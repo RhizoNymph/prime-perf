@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate test inputs and expected outputs for the sort problem.
 
-Compiles the C reference and runs it to produce expected outputs.
+Compiles the C reference and runs it. Writes sizes.toml plus per-size perf
+inputs under perf_inputs/.
 """
 
 from __future__ import annotations
@@ -15,6 +16,12 @@ import numpy as np
 
 PROBLEM_DIR = Path(__file__).parent.parent / "problems" / "sort"
 SEED = 42
+
+PERF_SIZES = [
+    ("small", 1_000_000),
+    ("medium", 4_000_000),
+    ("large", 10_000_000),
+]
 
 # Held-out distribution choice for sort:
 #   In-dist tests use uniform-random float arrays. Held-out switches to
@@ -204,24 +211,23 @@ def make_heldout_perf_bimodal(rng: np.random.Generator) -> bytes:
     return struct.pack("<i", n) + values.tobytes()
 
 
-def make_perf_input(rng: np.random.Generator) -> bytes:
-    """Perf input: N=1,000,000 with ~0.1% NaN and some inf."""
-    n = 1_000_000
+def make_perf_input(n: int, rng: np.random.Generator) -> bytes:
+    """Build a perf input of size N with ~0.1% NaN and a few infs/zeros."""
     values = rng.uniform(-1e6, 1e6, size=n).astype(np.float32)
 
     # Insert ~0.1% NaN
-    nan_count = n // 1000
+    nan_count = max(1, n // 1000)
     nan_indices = rng.choice(n, size=nan_count, replace=False)
     values[nan_indices] = np.float32(float("nan"))
 
     # Insert a few inf/-inf
-    inf_count = n // 5000
+    inf_count = max(1, n // 5000)
     inf_indices = rng.choice(n, size=inf_count, replace=False)
     for i, idx in enumerate(inf_indices):
         values[idx] = np.float32(float("inf") if i % 2 == 0 else float("-inf"))
 
     # Insert some -0.0 and +0.0
-    zero_count = n // 2000
+    zero_count = max(1, n // 2000)
     zero_indices = rng.choice(n, size=zero_count, replace=False)
     for i, idx in enumerate(zero_indices):
         values[idx] = np.float32(-0.0 if i % 2 == 0 else 0.0)
@@ -229,10 +235,22 @@ def make_perf_input(rng: np.random.Generator) -> bytes:
     return struct.pack("<i", n) + values.tobytes()
 
 
+def write_sizes_toml(path: Path, sizes: list[tuple[str, int]]) -> None:
+    lines: list[str] = []
+    for label, n in sizes:
+        lines.append("[[sizes]]")
+        lines.append(f'label = "{label}"')
+        lines.append(f"n = {n}")
+        lines.append("")
+    path.write_text("\n".join(lines))
+
+
 def main() -> None:
     rng = np.random.default_rng(SEED)
     tests_dir = PROBLEM_DIR / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
+    perf_dir = PROBLEM_DIR / "perf_inputs"
+    perf_dir.mkdir(parents=True, exist_ok=True)
 
     generators = [
         make_basic_small,
@@ -287,11 +305,11 @@ def main() -> None:
                 f"output={len(result.stdout)} bytes ({expected_floats} floats)"
             )
 
-        # Generate perf input
-        perf_input = make_perf_input(rng)
-        (PROBLEM_DIR / "perf_input.bin").write_bytes(perf_input)
-        n_perf = struct.unpack("<i", perf_input[:4])[0]
-        print(f"  perf_input: N={n_perf}, {len(perf_input)} bytes")
+        # Generate per-size perf inputs
+        for label, n in PERF_SIZES:
+            perf_input = make_perf_input(n, rng)
+            (perf_dir / f"{label}.bin").write_bytes(perf_input)
+            print(f"  perf_input[{label}]: N={n}, {len(perf_input)} bytes")
 
         # Held-out tests + perf input.
         # Distribution: bimodal/clustered/near-sorted instead of uniform.
@@ -335,7 +353,16 @@ def main() -> None:
             f"{len(held_perf_input)} bytes"
         )
 
-    print(f"Generated {len(generators)} tests + perf input for sort")
+    write_sizes_toml(PROBLEM_DIR / "sizes.toml", PERF_SIZES)
+    legacy = PROBLEM_DIR / "perf_input.bin"
+    if legacy.exists():
+        legacy.unlink()
+        print(f"  removed legacy {legacy.name}")
+
+    print(
+        f"Generated {len(generators)} tests + {len(PERF_SIZES)} perf inputs "
+        f"+ {len(heldout_generators)} held-out tests for sort"
+    )
 
 
 if __name__ == "__main__":

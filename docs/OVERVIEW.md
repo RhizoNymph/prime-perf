@@ -78,6 +78,16 @@ Loader for the `problems/` directory structure. Produces HuggingFace Dataset row
 `question` (problem + reference code), `answer`, and `info` (base64-encoded test data,
 reference perf counters). Supports language and hardware profile selection.
 
+Each problem declares an ordered set of perf input sizes via `sizes.toml`; raw inputs
+live under `perf_inputs/<label>.bin`, and per-size reference baselines under
+`reference_perf/<lang>_<profile>_<label>.json`.
+
+### Scaling Diagnostics (`src/perf_optimize/scaling.py`)
+Pure functions for `weight=0` rubric metrics derived from per-size measurements:
+largest-size cycles speedup, largest-size wall-clock, geomean speedup, and
+power-law scaling exponents (candidate / reference / delta) fitted from
+`log(cycles) ~ beta * log(n)`.
+
 ## Data Flow
 
 ### Measurement Pipeline
@@ -219,6 +229,12 @@ load_environment(language, max_turns)
 - entry_points: [build_dataset_rows, load_problem, load_problem_with_reference]
 - depends_on: [languages, type_system]
 - doc: docs/features/problem_bank.md
+
+### scaling_diagnostics
+- description: Per-size rubric metrics — largest-size speedup, geomean, power-law exponent fit
+- entry_points: [largest_size_cycles_speedup, largest_size_wall_clock_ms, cycles_speedup_geomean, scaling_exponent_candidate, scaling_exponent_reference, scaling_exponent_delta, fit_log_log_exponent]
+- depends_on: [type_system]
+- doc: docs/features/scaling_diagnostics.md
 
 ### heldout_evaluation
 - description: After-rollout held-out evaluation pass that recompiles the best correct candidate against an out-of-distribution test set + perf input, surfacing in-dist vs. held-out divergence as weight=0 metrics.

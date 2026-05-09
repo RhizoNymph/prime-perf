@@ -188,73 +188,134 @@ class TestCorrectnessGate:
 
 
 class TestPerfReward:
-    """Tests for perf_reward function."""
+    """Tests for perf_reward function (now keyed on largest-size)."""
+
+    def _state(self, *, best: float | None, ref: float | None) -> dict:
+        s: dict = {
+            "perf_inputs": [("large", 1024, b"x")],
+            "best_perf_by_size": {},
+            "reference_perf_by_size": {},
+        }
+        if best is not None:
+            s["best_perf_by_size"]["large"] = {"cycles": best}
+        if ref is not None:
+            s["reference_perf_by_size"]["large"] = {"cycles": ref}
+        return s
 
     def test_no_best_perf_returns_zero(self) -> None:
-        state = {"best_perf_dict": None, "reference_perf": {"cycles": 1000}}
-        assert perf_reward(state) == 0.0
+        assert perf_reward(self._state(best=None, ref=1000)) == 0.0
 
     def test_no_reference_perf_returns_zero(self) -> None:
-        state = {"best_perf_dict": {"cycles": 500}, "reference_perf": None}
-        assert perf_reward(state) == 0.0
+        assert perf_reward(self._state(best=500, ref=None)) == 0.0
 
     def test_both_missing_returns_zero(self) -> None:
         state: dict = {}
         assert perf_reward(state) == 0.0
 
     def test_improvement_returns_positive(self) -> None:
-        state = {
-            "best_perf_dict": {"cycles": 5000},
-            "reference_perf": {"cycles": 10000},
-        }
-        result = perf_reward(state)
+        result = perf_reward(self._state(best=5000, ref=10000))
         assert result == pytest.approx(0.5)
 
     def test_no_improvement_returns_zero(self) -> None:
-        state = {
-            "best_perf_dict": {"cycles": 10000},
-            "reference_perf": {"cycles": 10000},
-        }
-        assert perf_reward(state) == 0.0
+        assert perf_reward(self._state(best=10000, ref=10000)) == 0.0
 
     def test_regression_floors_at_zero(self) -> None:
-        state = {
-            "best_perf_dict": {"cycles": 20000},
-            "reference_perf": {"cycles": 10000},
-        }
-        assert perf_reward(state) == 0.0
+        assert perf_reward(self._state(best=20000, ref=10000)) == 0.0
 
 
 class TestDirectSpeedupReward:
-    """Tests for benchmark-style direct speedup reward."""
+    """Tests for benchmark-style direct speedup reward.
 
-    def test_cycles_speedup(self) -> None:
+    The headline metric is now cycles@largest-size; reads ``_by_size`` state shape.
+    """
+
+    def test_cycles_speedup_at_largest(self) -> None:
         state = {
             "benchmark_metric": "cycles",
-            "best_perf_dict": {"cycles": 5_000.0},
-            "reference_perf": {"cycles": 10_000.0},
+            "perf_inputs": [("small", 256, b"x"), ("large", 1024, b"x")],
+            "best_perf_by_size": {
+                "small": {"cycles": 1_000.0},
+                "large": {"cycles": 5_000.0},
+            },
+            "reference_perf_by_size": {
+                "small": {"cycles": 2_000.0},
+                "large": {"cycles": 10_000.0},
+            },
         }
+        # large is largest by n; (10000 - 5000)/10000 = 0.5
         assert direct_speedup_reward(state) == pytest.approx(0.5)
 
-    def test_wall_clock_speedup(self) -> None:
+    def test_wall_clock_speedup_at_largest(self) -> None:
         state = {
             "benchmark_metric": "wall_clock_ms",
-            "best_wall_clock_ms": 25.0,
-            "reference_wall_clock_ms": 100.0,
+            "perf_inputs": [("small", 256, b"x"), ("large", 1024, b"x")],
+            "best_wall_clock_ms_by_size": {"small": 5.0, "large": 25.0},
+            "reference_wall_clock_ms_by_size": {"small": 20.0, "large": 100.0},
         }
         assert direct_speedup_reward(state) == pytest.approx(0.75)
 
     def test_regression_floors_at_zero(self) -> None:
         state = {
             "benchmark_metric": "cycles",
-            "best_perf_dict": {"cycles": 12_000.0},
-            "reference_perf": {"cycles": 10_000.0},
+            "perf_inputs": [("large", 1024, b"x")],
+            "best_perf_by_size": {"large": {"cycles": 12_000.0}},
+            "reference_perf_by_size": {"large": {"cycles": 10_000.0}},
         }
+        assert direct_speedup_reward(state) == 0.0
+
+    def test_missing_largest_returns_zero(self) -> None:
+        state = {
+            "benchmark_metric": "cycles",
+            "perf_inputs": [("small", 256, b"x"), ("large", 1024, b"x")],
+            "best_perf_by_size": {"small": {"cycles": 5_000.0}},
+            "reference_perf_by_size": {
+                "small": {"cycles": 10_000.0},
+                "large": {"cycles": 40_000.0},
+            },
+        }
+        # No candidate at "large" → 0.0
         assert direct_speedup_reward(state) == 0.0
 
     def test_missing_reference_returns_zero(self) -> None:
         state = {
             "benchmark_metric": "cycles",
-            "best_perf_dict": {"cycles": 5_000.0},
+            "perf_inputs": [("large", 1024, b"x")],
+            "best_perf_by_size": {"large": {"cycles": 5_000.0}},
         }
         assert direct_speedup_reward(state) == 0.0
+
+    def test_no_perf_inputs_returns_zero(self) -> None:
+        state = {
+            "benchmark_metric": "cycles",
+            "best_perf_by_size": {"large": {"cycles": 5_000.0}},
+            "reference_perf_by_size": {"large": {"cycles": 10_000.0}},
+        }
+        assert direct_speedup_reward(state) == 0.0
+
+
+class TestPerfRewardSized:
+    """perf_reward should also key on largest-size by default."""
+
+    def test_uses_largest_size_counters(self) -> None:
+        state = {
+            "perf_inputs": [("small", 256, b"x"), ("large", 1024, b"x")],
+            "best_perf_by_size": {
+                "small": {"cycles": 1_000.0},
+                "large": {"cycles": 5_000.0},
+            },
+            "reference_perf_by_size": {
+                "small": {"cycles": 2_000.0},
+                "large": {"cycles": 10_000.0},
+            },
+        }
+        # weighted_improvement at large: cycles 50% improvement; weight=0.5,
+        # only counter present, renormalizes -> 0.5
+        assert perf_reward(state) == pytest.approx(0.5)
+
+    def test_missing_largest_returns_zero(self) -> None:
+        state = {
+            "perf_inputs": [("large", 1024, b"x")],
+            "best_perf_by_size": {},
+            "reference_perf_by_size": {"large": {"cycles": 10_000.0}},
+        }
+        assert perf_reward(state) == 0.0

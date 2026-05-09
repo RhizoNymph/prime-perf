@@ -76,14 +76,15 @@ def cycles_speedup_indist_minus_heldout(
     perf input than on the held-out perf input -- a signature of overfitting
     or lookup-table cheating to the in-dist test structure.
 
-    NOTE (merge): this reads the singular state fields ``reference_perf`` and
-    ``best_perf_dict`` produced by the current in-dist pipeline. The sibling
-    branch ``feat/scaling-test`` replaces those with ``reference_perf_by_size``
-    and ``best_perf_by_size``. After that branch merges, this function must be
-    updated to use the largest-size entries from those by-size dicts.
+    In-dist side reads the largest-size entries from
+    ``reference_perf_by_size`` and ``best_perf_by_size`` so the comparison is
+    apples-to-apples with the headline metric.
     """
-    indist_ref = state.get("reference_perf") or {}
-    indist_best = state.get("best_perf_dict") or {}
+    from .reward import _largest_label
+
+    label = _largest_label(state)
+    indist_ref = ((state.get("reference_perf_by_size") or {}).get(label) or {}) if label else {}
+    indist_best = ((state.get("best_perf_by_size") or {}).get(label) or {}) if label else {}
     heldout_ref = state.get("reference_heldout_perf") or {}
     heldout_best = state.get("heldout_best_perf") or {}
 

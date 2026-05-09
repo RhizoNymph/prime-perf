@@ -20,9 +20,32 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _write_sizes_toml(problem_dir: Path) -> None:
+    (problem_dir / "sizes.toml").write_text(
+        """
+[[sizes]]
+label = "small"
+n = 64
+
+[[sizes]]
+label = "medium"
+n = 128
+
+[[sizes]]
+label = "large"
+n = 256
+"""
+    )
+    pi = problem_dir / "perf_inputs"
+    pi.mkdir(exist_ok=True)
+    (pi / "small.bin").write_bytes(b"S" * 32)
+    (pi / "medium.bin").write_bytes(b"M" * 64)
+    (pi / "large.bin").write_bytes(b"L" * 128)
+
+
 @pytest.fixture
 def problem_dir(tmp_path: Path) -> Path:
-    """Create a minimal problem directory for testing."""
+    """Create a minimal problem directory for testing (sized perf-inputs layout)."""
     d = tmp_path / "test_problem"
     d.mkdir()
 
@@ -40,8 +63,8 @@ def problem_dir(tmp_path: Path) -> Path:
     (tests / "input_1.bin").write_bytes(b"\x07\x08")
     (tests / "expected_1.bin").write_bytes(b"\x09\x0a")
 
-    # perf_input.bin
-    (d / "perf_input.bin").write_bytes(b"\xff" * 100)
+    # sizes + perf inputs (sized layout)
+    _write_sizes_toml(d)
 
     # reference solutions
     ref = d / "reference"
@@ -51,15 +74,32 @@ def problem_dir(tmp_path: Path) -> Path:
     (ref / "solution.py").write_text("print('hello')\n")
     (ref / "solution.ts").write_text("console.log('hello')\n")
 
-    # reference perf
+    # reference perf — one file per size
     perf_dir = d / "reference_perf"
     perf_dir.mkdir()
-    (perf_dir / "c_amd_zen.json").write_text(json.dumps({
+    (perf_dir / "c_amd_zen_small.json").write_text(json.dumps({
+        "cycles": 250000.0,
+        "instructions": 500000.0,
+        "cache_misses": 1250.0,
+        "l1_dcache_load_misses": 750.0,
+        "branch_misses": 250.0,
+        "wall_clock_ms": 2.0,
+    }))
+    (perf_dir / "c_amd_zen_medium.json").write_text(json.dumps({
+        "cycles": 500000.0,
+        "instructions": 1000000.0,
+        "cache_misses": 2500.0,
+        "l1_dcache_load_misses": 1500.0,
+        "branch_misses": 500.0,
+        "wall_clock_ms": 4.0,
+    }))
+    (perf_dir / "c_amd_zen_large.json").write_text(json.dumps({
         "cycles": 1000000.0,
         "instructions": 2000000.0,
         "cache_misses": 5000.0,
         "l1_dcache_load_misses": 3000.0,
         "branch_misses": 1000.0,
+        "wall_clock_ms": 8.0,
     }))
 
     return d
@@ -76,7 +116,7 @@ def tolerance_problem_dir(tmp_path: Path) -> Path:
     tests.mkdir()
     (tests / "input_0.bin").write_bytes(b"\x01")
     (tests / "expected_0.bin").write_bytes(b"\x02")
-    (d / "perf_input.bin").write_bytes(b"\x00")
+    _write_sizes_toml(d)
     ref = d / "reference"
     ref.mkdir()
     (ref / "solution.c").write_text("int main() {}\n")
@@ -102,9 +142,11 @@ class TestLoadProblem:
         assert len(spec.expected_outputs) == 2
         assert spec.expected_outputs[0] == b"\x04\x05\x06"
 
-    def test_loads_perf_input(self, problem_dir: Path) -> None:
+    def test_loads_perf_inputs(self, problem_dir: Path) -> None:
         spec = load_problem(problem_dir)
-        assert len(spec.perf_input) == 100
+        # sized layout: tuple of SizedPerfInput
+        labels = [p.spec.label for p in spec.perf_inputs]
+        assert labels == ["small", "medium", "large"]
 
     def test_exact_comparison_mode(self, problem_dir: Path) -> None:
         spec = load_problem(problem_dir)
@@ -124,6 +166,7 @@ class TestLoadProblem:
         tests.mkdir()
         (tests / "input_0.bin").write_bytes(b"\x01")
         (tests / "expected_0.bin").write_bytes(b"\x02")
+        _write_sizes_toml(d)
         spec = load_problem(d)
         assert spec.comparison == ComparisonMode.EXACT
 
@@ -190,13 +233,19 @@ class TestLoadProblemWithReference:
     def test_loads_reference_perf(self, problem_dir: Path) -> None:
         p = load_problem_with_reference(problem_dir, Language.C, "amd_zen")
         assert p.reference_perf is not None
-        assert p.reference_perf.cycles == 1000000.0
-        assert p.reference_perf.instructions == 2000000.0
-        assert p.reference_perf.llc_load_misses is None  # not in json
+        # tuple of SizedMeasurement
+        by_label = {m.spec.label: m for m in p.reference_perf}
+        assert by_label["large"].perf_counters is not None
+        assert by_label["large"].perf_counters.cycles == 1000000.0
+        assert by_label["small"].perf_counters is not None
+        assert by_label["small"].perf_counters.cycles == 250000.0
 
-    def test_missing_perf_returns_none(self, problem_dir: Path) -> None:
+    def test_missing_perf_yields_empty_measurements(self, problem_dir: Path) -> None:
         p = load_problem_with_reference(problem_dir, Language.RUST, "amd_zen")
-        assert p.reference_perf is None
+        assert p.reference_perf is not None
+        # all per-size are empty (no rust ref)
+        for m in p.reference_perf:
+            assert m.perf_counters is None
 
 
 class TestBuildDatasetRows:
@@ -222,10 +271,11 @@ class TestBuildDatasetRows:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
         assert rows[0]["answer"] == ""
 
-    def test_row_has_reference_perf(self, problem_dir: Path) -> None:
+    def test_row_has_reference_perf_by_size(self, problem_dir: Path) -> None:
         rows = build_dataset_rows(problem_dir.parent, Language.C, "amd_zen")
-        perf = rows[0]["info"]["reference_perf"]
-        assert perf["cycles"] == 1000000.0
+        perf = rows[0]["info"]["reference_perf_by_size"]
+        assert perf["large"]["cycles"] == 1000000.0
+        assert perf["small"]["cycles"] == 250000.0
 
 
 class TestFormatPromptFiltering:
