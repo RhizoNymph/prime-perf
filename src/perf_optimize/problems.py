@@ -48,6 +48,13 @@ class ProblemSpec:
         expected_outputs: Expected binary outputs for each test case.
         perf_inputs: Per-size perf measurement inputs, sorted ascending by n.
         comparison: Comparison configuration (mode and optional tolerance).
+        heldout_test_inputs: Binary inputs for the held-out diagnostic test
+            set. Empty tuple if the problem has no held-out coverage yet.
+        heldout_expected_outputs: Expected outputs paired with
+            ``heldout_test_inputs``.
+        heldout_perf_input: Single held-out perf input sized comparably to the
+            in-dist large perf input. Empty bytes if the problem has no
+            held-out coverage yet.
     """
 
     name: str
@@ -56,6 +63,9 @@ class ProblemSpec:
     expected_outputs: tuple[bytes, ...]
     perf_inputs: tuple[SizedPerfInput, ...]
     comparison: ComparisonConfig
+    heldout_test_inputs: tuple[bytes, ...] = ()
+    heldout_expected_outputs: tuple[bytes, ...] = ()
+    heldout_perf_input: bytes = b""
 
     @property
     def tolerance(self) -> float | None:
@@ -229,6 +239,96 @@ def _load_reference_perf(
     return tuple(out)
 
 
+def _load_heldout_test_files(
+    heldout_dir: Path,
+) -> tuple[tuple[bytes, ...], tuple[bytes, ...]]:
+    """Load held-out test input/expected pairs from ``tests_heldout/``.
+
+    Returns empty tuples when the directory does not exist; the caller
+    decides whether the absence of held-out tests is fatal for its workflow.
+    Files are expected to be named ``input_0.bin`` / ``expected_0.bin`` ...
+    """
+    if not heldout_dir.exists():
+        return (), ()
+
+    inputs: list[bytes] = []
+    outputs: list[bytes] = []
+
+    i = 0
+    while True:
+        input_file = heldout_dir / f"input_{i}.bin"
+        expected_file = heldout_dir / f"expected_{i}.bin"
+        if not input_file.exists():
+            break
+        inputs.append(input_file.read_bytes())
+        if not expected_file.exists():
+            raise FileNotFoundError(
+                f"Missing expected output file: {expected_file} "
+                f"(input_{i}.bin exists but expected_{i}.bin does not)"
+            )
+        outputs.append(expected_file.read_bytes())
+        i += 1
+
+    all_input_files = list(heldout_dir.glob("input_*.bin"))
+    if len(all_input_files) > i:
+        extra = sorted(
+            f.name
+            for f in all_input_files
+            if f.name not in {f"input_{j}.bin" for j in range(i)}
+        )
+        raise FileNotFoundError(
+            f"Non-contiguous test files in {heldout_dir}: found {extra} "
+            f"beyond contiguous range input_0..input_{i - 1}"
+        )
+
+    return tuple(inputs), tuple(outputs)
+
+
+def _load_heldout_perf_input(problem_dir: Path) -> bytes:
+    """Load ``perf_inputs_heldout/large.bin`` for a problem.
+
+    Mandatory for the held-out evaluation pass: raises ``FileNotFoundError``
+    with a structured message when the file is missing so the migration
+    cannot silently leave a problem without held-out perf coverage.
+    """
+    perf_file = problem_dir / "perf_inputs_heldout" / "large.bin"
+    if not perf_file.exists():
+        raise FileNotFoundError(
+            f"Missing held-out perf input: {perf_file} "
+            "(expected at perf_inputs_heldout/large.bin)"
+        )
+    return perf_file.read_bytes()
+
+
+def _load_heldout_reference_perf(
+    problem_dir: Path, language: Language, profile_name: str
+) -> tuple[PerfCounters | None, float | None]:
+    """Load held-out reference perf counters and wall-clock for a profile.
+
+    Returns ``(None, None)`` when the file does not exist. The JSON file is
+    expected at ``reference_perf/<lang>_<profile>_heldout.json`` and may
+    optionally include a ``wall_clock_ms`` field alongside the perf counters.
+    """
+    perf_file = (
+        problem_dir / "reference_perf" / f"{language.value}_{profile_name}_heldout.json"
+    )
+    if not perf_file.exists():
+        return None, None
+
+    data = json.loads(perf_file.read_text())
+    counters = PerfCounters(
+        cycles=data["cycles"],
+        instructions=data["instructions"],
+        cache_references=data.get("cache_references"),
+        cache_misses=data.get("cache_misses"),
+        l1_dcache_load_misses=data.get("l1_dcache_load_misses"),
+        llc_load_misses=data.get("llc_load_misses"),
+        branch_misses=data.get("branch_misses"),
+    )
+    wall_clock_ms = data.get("wall_clock_ms")
+    return counters, wall_clock_ms
+
+
 def load_problem(problem_dir: Path) -> ProblemSpec:
     """Load a problem specification from its directory.
 
@@ -255,6 +355,17 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
     sizes = _load_sizes_toml(problem_dir)
     perf_inputs = _load_perf_inputs(problem_dir, sizes)
 
+    # Held-out fixtures are optional at the loader level so that problems can
+    # be migrated incrementally; the env raises during setup_state if a
+    # held-out pass is requested but inputs are missing.
+    heldout_inputs, heldout_expected = _load_heldout_test_files(
+        problem_dir / "tests_heldout",
+    )
+    heldout_perf_file = problem_dir / "perf_inputs_heldout" / "large.bin"
+    heldout_perf_input = (
+        heldout_perf_file.read_bytes() if heldout_perf_file.exists() else b""
+    )
+
     return ProblemSpec(
         name=name,
         spec_text=spec_text,
@@ -262,6 +373,9 @@ def load_problem(problem_dir: Path) -> ProblemSpec:
         expected_outputs=expected_outputs,
         perf_inputs=perf_inputs,
         comparison=comparison,
+        heldout_test_inputs=heldout_inputs,
+        heldout_expected_outputs=heldout_expected,
+        heldout_perf_input=heldout_perf_input,
     )
 
 
@@ -417,6 +531,25 @@ def build_dataset_rows(
                 problem.reference_perf
             ),
         }
+
+        # Held-out diagnostic data — namespaced separately from in-dist sized
+        # data so they evolve independently.
+        info["heldout_test_inputs"] = [
+            _encode_bytes(t) for t in problem.spec.heldout_test_inputs
+        ]
+        info["heldout_expected_outputs"] = [
+            _encode_bytes(t) for t in problem.spec.heldout_expected_outputs
+        ]
+        info["heldout_perf_input"] = _encode_bytes(problem.spec.heldout_perf_input)
+
+        heldout_counters, heldout_wall_clock = _load_heldout_reference_perf(
+            problem_dir, language, profile_name,
+        )
+        info["reference_heldout_perf"] = (
+            heldout_counters.to_dict() if heldout_counters is not None else None
+        )
+        info["reference_heldout_wall_clock_ms"] = heldout_wall_clock
+
 
         rows.append({
             "question": prompt,

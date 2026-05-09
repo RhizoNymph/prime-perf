@@ -194,6 +194,9 @@ class TurnProcessor:
                 new_best_perf, new_best_wall = _measurements_to_dicts(result.measurements)
                 updates["best_perf_by_size"] = new_best_perf
                 updates["best_wall_clock_ms_by_size"] = new_best_wall
+                # Record the source that produced this best so the held-out
+                # cleanup pass can recompile it.
+                updates["best_candidate_source"] = code
 
             largest_perf = (
                 largest_measurement.perf_counters.to_dict()

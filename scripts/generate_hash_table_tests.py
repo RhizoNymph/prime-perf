@@ -25,6 +25,14 @@ PERF_SIZES = [
     ("large", 200_000),
 ]
 
+# Held-out distribution choice for hash_table:
+#   In-dist tests use uniform random key sampling. Held-out switches to
+#   *Zipf-distributed* key access (heavy collisions on a small head set) and
+#   sequential numeric keys. These exercise probe-chain / cache hit-rate
+#   behavior very differently from uniform key access, making it harder to
+#   overfit to incidental properties of uniform-random ASCII keys.
+HELDOUT_SEED = 1337
+
 
 def rand_string(rng: random.Random, min_len: int, max_len: int) -> str:
     length = rng.randint(min_len, max_len)
@@ -98,6 +106,100 @@ def build_input(
         parts.append(struct.pack("<i", len(key_bytes)))
         parts.append(key_bytes)
 
+    return b"".join(parts)
+
+
+def _zipf_indices(rng: random.Random, num_unique: int, num_samples: int, s: float = 1.5) -> list[int]:
+    """Sample ``num_samples`` indices in [0, num_unique) from a Zipf(s) distribution."""
+    weights = [1.0 / ((i + 1) ** s) for i in range(num_unique)]
+    total = sum(weights)
+    cdf: list[float] = []
+    acc = 0.0
+    for w in weights:
+        acc += w / total
+        cdf.append(acc)
+
+    indices: list[int] = []
+    for _ in range(num_samples):
+        r = rng.random()
+        # Linear scan is fine for our small num_unique; bisect would be tidier
+        # but adds an import and is unnecessary at these sizes.
+        for i, c in enumerate(cdf):
+            if r <= c:
+                indices.append(i)
+                break
+        else:
+            indices.append(num_unique - 1)
+    return indices
+
+
+def build_heldout_zipf(
+    rng: random.Random, n_insert: int, n_lookup: int, *, zipf_s: float = 1.5,
+) -> bytes:
+    """Held-out: uniform random inserts, but lookups follow a Zipf distribution.
+
+    Heavy-tail lookup pattern stresses cache locality and probe-chain length
+    completely differently from uniform-random lookups.
+    """
+    parts: list[bytes] = []
+    inserts: list[tuple[str, str]] = []
+    for _ in range(n_insert):
+        key = rand_string(rng, 5, 20)
+        val = rand_string(rng, 10, 50)
+        inserts.append((key, val))
+
+    parts.append(struct.pack("<i", n_insert))
+    for key, val in inserts:
+        kb, vb = key.encode("utf-8"), val.encode("utf-8")
+        parts.append(struct.pack("<i", len(kb)))
+        parts.append(kb)
+        parts.append(struct.pack("<i", len(vb)))
+        parts.append(vb)
+
+    unique_keys = list(dict(inserts).keys())
+    sampled = _zipf_indices(rng, len(unique_keys), n_lookup, s=zipf_s)
+    lookup_keys = [unique_keys[i] for i in sampled]
+
+    parts.append(struct.pack("<i", n_lookup))
+    for key in lookup_keys:
+        kb = key.encode("utf-8")
+        parts.append(struct.pack("<i", len(kb)))
+        parts.append(kb)
+
+    return b"".join(parts)
+
+
+def build_heldout_sequential(rng: random.Random, n_insert: int, n_lookup: int) -> bytes:
+    """Held-out: sequential numeric keys (e.g. ``key_000001``).
+
+    Sequential keys hit the same hash buckets in a deterministic pattern
+    very different from uniform random ASCII strings, exposing any
+    optimization that assumed uniform hash dispersion.
+    """
+    parts: list[bytes] = []
+    inserts: list[tuple[str, str]] = []
+    for i in range(n_insert):
+        key = f"key_{i:08d}"
+        val = rand_string(rng, 10, 50)
+        inserts.append((key, val))
+
+    parts.append(struct.pack("<i", n_insert))
+    for key, val in inserts:
+        kb, vb = key.encode("utf-8"), val.encode("utf-8")
+        parts.append(struct.pack("<i", len(kb)))
+        parts.append(kb)
+        parts.append(struct.pack("<i", len(vb)))
+        parts.append(vb)
+
+    unique_keys = [k for k, _ in inserts]
+    lookup_keys = [unique_keys[i % len(unique_keys)] for i in range(n_lookup)]
+    rng.shuffle(lookup_keys)
+
+    parts.append(struct.pack("<i", n_lookup))
+    for key in lookup_keys:
+        kb = key.encode("utf-8")
+        parts.append(struct.pack("<i", len(kb)))
+        parts.append(kb)
     return b"".join(parts)
 
 
@@ -176,14 +278,56 @@ def main() -> None:
             print(f"  perf_input[{label}]: {n} inserts + {n} lookups, "
                   f"{len(perf_input)} bytes")
 
+        # Held-out tests + perf input.
+        # Distribution: Zipf-skewed lookups and sequential numeric keys
+        # rather than uniform-random ASCII keys.
+        held_rng = random.Random(HELDOUT_SEED)
+        held_tests_dir = PROBLEM_DIR / "tests_heldout"
+        held_tests_dir.mkdir(parents=True, exist_ok=True)
+        held_perf_dir = PROBLEM_DIR / "perf_inputs_heldout"
+        held_perf_dir.mkdir(parents=True, exist_ok=True)
+
+        heldout_specs = [
+            ("zipf_small", build_heldout_zipf(held_rng, 100, 200)),
+            ("zipf_medium", build_heldout_zipf(held_rng, 500, 1000, zipf_s=1.2)),
+            ("sequential_small", build_heldout_sequential(held_rng, 200, 400)),
+            ("sequential_medium", build_heldout_sequential(held_rng, 1000, 2000)),
+        ]
+        for i, (label, input_data) in enumerate(heldout_specs):
+            (held_tests_dir / f"input_{i}.bin").write_bytes(input_data)
+            result = subprocess.run(
+                [str(binary)], input=input_data, capture_output=True, timeout=60,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"C reference failed for held-out {label}: "
+                    f"{result.stderr.decode()}"
+                )
+            (held_tests_dir / f"expected_{i}.bin").write_bytes(result.stdout)
+            print(
+                f"  heldout_test_{i}: {label}, input={len(input_data)} bytes, "
+                f"output={len(result.stdout)} bytes"
+            )
+
+        # Held-out perf input: Zipf-distributed lookups, sized comparably to
+        # the in-dist perf input.
+        held_perf_input = build_heldout_zipf(held_rng, 100_000, 100_000, zipf_s=1.2)
+        (held_perf_dir / "large.bin").write_bytes(held_perf_input)
+        print(
+            f"  heldout_perf large.bin: 100k inserts + 100k Zipf lookups, "
+            f"{len(held_perf_input)} bytes"
+        )
+
     write_sizes_toml(PROBLEM_DIR / "sizes.toml", PERF_SIZES)
     legacy = PROBLEM_DIR / "perf_input.bin"
     if legacy.exists():
         legacy.unlink()
         print(f"  removed legacy {legacy.name}")
 
-    print(f"Generated {len(test_configs)} tests + {len(PERF_SIZES)} perf inputs "
-          f"for hash_table")
+    print(
+        f"Generated {len(test_configs)} tests + {len(PERF_SIZES)} perf inputs "
+        f"+ {len(heldout_specs)} held-out tests for hash_table"
+    )
 
 
 if __name__ == "__main__":

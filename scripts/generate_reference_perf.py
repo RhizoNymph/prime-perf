@@ -88,6 +88,68 @@ async def _measure_problem(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+async def _measure_heldout(
+    sandbox: PerfSandbox, problem_dir: Path,
+) -> tuple[PerfCounters, float]:
+    """Measure the C reference on the held-out perf input.
+
+    Held-out perf input lives at ``perf_inputs_heldout/large.bin``. Returns
+    ``(counters, wall_clock_ms)``. Sized comparably to the in-dist large perf
+    input so cycle counts can be compared 1:1 with the in-dist baseline.
+    """
+    import asyncio
+    import time
+
+    source = (problem_dir / "reference" / "solution.c").read_text()
+    perf_input = problem_dir / "perf_inputs_heldout" / "large.bin"
+    if not perf_input.exists():
+        raise FileNotFoundError(
+            f"{perf_input} missing — run the test generator to produce held-out data",
+        )
+
+    compilation, work_dir = await sandbox.compile_only(source)
+    try:
+        if isinstance(compilation, CompilationFailure):
+            raise RuntimeError(
+                f"failed to compile reference for {problem_dir.name} (heldout): "
+                f"{compilation.stderr[:500]}",
+            )
+        binary = Path(work_dir) / sandbox._config.language.output_file
+        t0 = time.monotonic()
+        counters = await sandbox.measure_only(binary, perf_input)
+        wall_ms = (time.monotonic() - t0) * 1000.0
+        # Yield once so the event loop drains -- keeps this script async-friendly.
+        await asyncio.sleep(0)
+        return counters, wall_ms
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+async def _generate_heldout(
+    sandbox: PerfSandbox, problem_dir: Path, profile: str,
+) -> None:
+    """Persist held-out reference perf for one problem.
+
+    Kept as a separate function so the sibling per-size rewrite can interleave
+    a per-size loop with this held-out pass without textual conflicts.
+    """
+    counters, wall_ms = await _measure_heldout(sandbox, problem_dir)
+    out_dir = problem_dir / "reference_perf"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"c_{profile}_heldout.json"
+
+    payload: dict[str, float | None] = _counters_to_json(counters)
+    payload["wall_clock_ms"] = wall_ms
+    out_file.write_text(json.dumps(payload, indent=2) + "\n")
+    summary = ", ".join(
+        f"{k}={int(v):,}"
+        for k, v in payload.items()
+        if v is not None and k != "wall_clock_ms"
+    )
+    print(f"    heldout: {summary}, wall={wall_ms:.1f}ms")
+    print(f"      -> {out_file.relative_to(REPO_ROOT)}")
+
+
 async def main() -> None:
     sandbox = PerfSandbox(SandboxConfig.from_env(language=Language.C))
     await sandbox.check_prerequisites()
@@ -126,6 +188,10 @@ async def main() -> None:
                 f"wall_clock_ms={wall_clock_ms:.1f}"
             )
             print(f"    -> {out_file.relative_to(REPO_ROOT)}")
+
+        # Held-out reference perf. Kept as a separate call so the sibling
+        # per-size rewrite can interleave its per-size loop above this line.
+        await _generate_heldout(sandbox, problem_dir, profile)
 
 
 if __name__ == "__main__":

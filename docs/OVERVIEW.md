@@ -235,3 +235,9 @@ load_environment(language, max_turns)
 - entry_points: [largest_size_cycles_speedup, largest_size_wall_clock_ms, cycles_speedup_geomean, scaling_exponent_candidate, scaling_exponent_reference, scaling_exponent_delta, fit_log_log_exponent]
 - depends_on: [type_system]
 - doc: docs/features/scaling_diagnostics.md
+
+### heldout_evaluation
+- description: After-rollout held-out evaluation pass that recompiles the best correct candidate against an out-of-distribution test set + perf input, surfacing in-dist vs. held-out divergence as weight=0 metrics.
+- entry_points: [PerfOptimizeEnv._run_heldout_pass, _attach_heldout_metrics, heldout module]
+- depends_on: [verifiers_environment, sandbox, problem_bank]
+- doc: docs/features/heldout_evaluation.md

@@ -23,10 +23,13 @@ environments
 # Perf references
 *.bin
 problems/*/*.bin
-# But DO commit per-size sized perf inputs and the tests/expected pairs that
-# define the problem bank — without these, the environment cannot be loaded.
+# Per-size sized perf inputs and tests/expected pairs define the problem bank
+# and must be tracked — without these, the environment cannot be loaded.
 !problems/*/perf_inputs/*.bin
 !problems/*/tests/*.bin
+# Held-out test/perf bins are part of the eval contract and must be tracked.
+!problems/*/tests_heldout/*.bin
+!problems/*/perf_inputs_heldout/*.bin
 
 AGENTS.md
 CLAUDE.md
