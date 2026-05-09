@@ -18,6 +18,13 @@ from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
 
 from .config import SandboxConfig, _detect_unshare_net
+from .diagnostics import (
+    candidate_instructions,
+    candidate_ipc,
+    instructions_ratio,
+    ipc_delta,
+    reference_ipc,
+)
 from .languages import Language
 from .problems import build_dataset_rows
 from .processor import TurnProcessor
@@ -63,6 +70,19 @@ _SUBMIT_PATTERN = re.compile(r"^\s*<submit\s*/?>\s*$", re.MULTILINE)
 
 # Regex to strip markdown fenced code blocks before submit detection.
 _MARKDOWN_FENCE_PATTERN = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
+
+
+def _attach_ipc_metrics(rubric: Rubric) -> None:
+    """Attach IPC / instructions diagnostic metrics (weight=0).
+
+    These are observability-only — they do not affect the score, but they
+    characterize HOW the candidate is winning (microarchitectural vs algorithmic).
+    """
+    rubric.add_metric(candidate_instructions)
+    rubric.add_metric(candidate_ipc)
+    rubric.add_metric(reference_ipc)
+    rubric.add_metric(ipc_delta)
+    rubric.add_metric(instructions_ratio)
 
 
 def _default_problems_dir() -> Path:
@@ -194,6 +214,9 @@ class PerfOptimizeEnv(MultiTurnEnv):
             funcs=[correctness_gate, reward_func],
             weights=[1.0, 1.0],
         )
+        # Sibling branches `feat/scaling-test` and `feat/held-out-inputs` will
+        # add their own `_attach_*_metrics(rubric)` calls on this same line.
+        _attach_ipc_metrics(rubric)
 
         super().__init__(
             dataset=dataset,
