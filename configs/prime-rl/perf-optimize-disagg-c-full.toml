@@ -33,7 +33,7 @@ name = "perf-optimize-disagg-4b"
 
 [ckpt]
 interval = 50
-resume_step = 250
+resume_step = 150
 
 [trainer.model]
 impl = "auto"
@@ -69,7 +69,7 @@ rollouts_per_example = 8
 
 [orchestrator.sampling]
 max_tokens = 2048
-temperature = 1.0
+temperature = 1.4
 
 [[orchestrator.env]]
 id = "perf-optimize"
