@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
 
@@ -39,6 +40,9 @@ from .types import (
     CompilationSuccess,
     ExecutionResult,
     PerfCounters,
+    SizedExecutionResult,
+    SizedMeasurement,
+    SizedPerfInput,
     TestReport,
     TestResult,
 )
@@ -133,6 +137,148 @@ class PerfSandbox:
             )
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    async def compile_and_run_sized(
+        self,
+        source_code: str,
+        test_inputs: list[bytes],
+        expected_outputs: list[bytes],
+        perf_inputs: list[SizedPerfInput],
+        *,
+        test_names: list[str] | None = None,
+        comparison: ComparisonConfig = ComparisonConfig(),
+    ) -> SizedExecutionResult:
+        """Sized variant: compile once, run tests once, then measure per size.
+
+        Per-size measurement is sequential (perf events would compete in
+        parallel). Each size gets a fresh bwrap workdir so prior runs do
+        not warm caches for the next.
+        """
+        if test_names is None:
+            test_names = [f"test_{i}" for i in range(len(test_inputs))]
+
+        compile_dir = tempfile.mkdtemp(prefix="perf_opt_sized_compile_")
+        try:
+            work = Path(compile_dir)
+            lang = self._config.language
+
+            source_file = work / f"solution{lang.file_extension}"
+            await asyncio.to_thread(source_file.write_text, source_code)
+
+            compilation = await self._compile(compile_dir)
+            if isinstance(compilation, CompilationFailure):
+                logger.info(
+                    "sized_compilation_failed",
+                    outcome=compilation.outcome,
+                    stderr=compilation.stderr[:500],
+                )
+                return SizedExecutionResult(
+                    compilation=compilation,
+                    test_report=None,
+                    measurements=(),
+                )
+
+            test_report = await self._run_tests(
+                compile_dir, test_inputs, expected_outputs, test_names, comparison,
+            )
+            if not test_report.all_passed:
+                logger.info(
+                    "sized_tests_failed",
+                    passed=test_report.passed,
+                    total=test_report.total,
+                )
+                return SizedExecutionResult(
+                    compilation=compilation,
+                    test_report=test_report,
+                    measurements=(),
+                )
+
+            binary_src = Path(compile_dir) / lang.output_file
+            measurements = await self._measure_sized_from_binary(binary_src, perf_inputs)
+
+            return SizedExecutionResult(
+                compilation=compilation,
+                test_report=test_report,
+                measurements=measurements,
+            )
+        finally:
+            shutil.rmtree(compile_dir, ignore_errors=True)
+
+    async def measure_sized(
+        self,
+        binary_path: str | Path,
+        inputs: list[SizedPerfInput],
+    ) -> list[SizedMeasurement]:
+        """Run perf stat on a pre-compiled binary for each sized input.
+
+        Sequential (perf events compete under parallelism). Each size gets a
+        fresh bwrap workdir for cache-state independence.
+        """
+        binary_path = Path(binary_path)
+        ms = await self._measure_sized_from_binary(binary_path, inputs)
+        return list(ms)
+
+    async def _measure_sized_from_binary(
+        self,
+        binary_path: Path,
+        inputs: list[SizedPerfInput],
+    ) -> tuple[SizedMeasurement, ...]:
+        """Internal: measure each input size with a fresh workdir."""
+        results: list[SizedMeasurement] = []
+        # Largest size gets a generous timeout; default = perf_timeout_s * 1.5.
+        largest_n = max((p.spec.n for p in inputs), default=0)
+        largest_timeout = self._config.largest_size_perf_timeout_s
+        if largest_timeout is None:
+            largest_timeout = self._config.perf_timeout_s * 1.5
+        for sized in inputs:
+            work_dir = tempfile.mkdtemp(prefix="perf_opt_sized_meas_")
+            try:
+                work = Path(work_dir)
+                await asyncio.to_thread(shutil.copy2, binary_path, work / "solution")
+                await asyncio.to_thread((work / "solution").chmod, 0o755)
+                timeout = (
+                    largest_timeout if sized.spec.n == largest_n
+                    else self._config.perf_timeout_s
+                )
+                t0 = time.perf_counter()
+                try:
+                    counters = await self._run_perf(
+                        work_dir,
+                        perf_input_data=sized.data,
+                        timeout=timeout,
+                    )
+                    wall_clock_ms = (time.perf_counter() - t0) * 1000.0
+                    results.append(
+                        SizedMeasurement(
+                            spec=sized.spec,
+                            perf_counters=counters,
+                            wall_clock_ms=wall_clock_ms,
+                        )
+                    )
+                    logger.info(
+                        "sized_perf_measured",
+                        size=sized.spec.label,
+                        n=sized.spec.n,
+                        cycles=counters.cycles,
+                        wall_clock_ms=f"{wall_clock_ms:.1f}",
+                    )
+                except PerfMeasurementError as exc:
+                    logger.warning(
+                        "sized_perf_failed",
+                        size=sized.spec.label,
+                        n=sized.spec.n,
+                        error=str(exc),
+                    )
+                    results.append(
+                        SizedMeasurement(
+                            spec=sized.spec,
+                            perf_counters=None,
+                            wall_clock_ms=None,
+                        )
+                    )
+            finally:
+                shutil.rmtree(work_dir, ignore_errors=True)
+        return tuple(results)
 
     async def measure_only(self, binary_path: str | Path, input_path: str | Path) -> PerfCounters:
         """Run perf stat on a pre-compiled binary.
@@ -340,8 +486,21 @@ class PerfSandbox:
 
         return TestResult(name=name, passed=True)
 
-    async def _run_perf(self, work_dir: str, *, perf_input_data: bytes | None = None) -> PerfCounters:
-        """Run perf stat on the solution with perf_input.bin as stdin."""
+    async def _run_perf(
+        self,
+        work_dir: str,
+        *,
+        perf_input_data: bytes | None = None,
+        timeout: float | None = None,
+    ) -> PerfCounters:
+        """Run perf stat on the solution with perf_input.bin as stdin.
+
+        Args:
+            work_dir: Sandbox workdir containing the compiled ``solution`` binary.
+            perf_input_data: Optional in-memory input bytes (else read from disk).
+            timeout: Override for the perf-stat timeout in seconds. Defaults
+                to ``self._config.perf_timeout_s``.
+        """
         perf_cmd = build_perf_command(self._config)
         bwrap_cmd = build_bwrap_command(self._config, work_dir, perf_cmd)
 
@@ -354,15 +513,16 @@ class PerfSandbox:
                 raise PerfMeasurementError(f"perf input file not found: {perf_input_path}")
             stdin_data = await asyncio.to_thread(perf_input_path.read_bytes)
 
+        effective_timeout = timeout if timeout is not None else self._config.perf_timeout_s
         try:
             returncode, _stdout, stderr = await self._run_subprocess(
                 bwrap_cmd,
-                timeout=self._config.perf_timeout_s,
+                timeout=effective_timeout,
                 stdin_data=stdin_data,
             )
         except TimeoutError:
             raise PerfMeasurementError(
-                f"perf stat timed out after {self._config.perf_timeout_s}s"
+                f"perf stat timed out after {effective_timeout}s"
             ) from None
 
         if returncode != 0:

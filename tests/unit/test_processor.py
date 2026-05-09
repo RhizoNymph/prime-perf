@@ -1,4 +1,9 @@
-"""Tests for TurnProcessor — domain logic decoupled from verifiers SDK."""
+"""Tests for TurnProcessor — domain logic decoupled from verifiers SDK.
+
+Now operates on the sized perf_inputs layout: per-size measurement and
+per-label best tracking. Whole-submission selection: largest-size cycles win
+or lose; no per-size mosaic of winners.
+"""
 
 from __future__ import annotations
 
@@ -11,18 +16,23 @@ from perf_optimize.types import (
     CompilationFailure,
     CompilationOutcome,
     CompilationSuccess,
-    ExecutionResult,
     PerfCounters,
+    SizedExecutionResult,
+    SizedMeasurement,
+    SizedPerfInput,
+    SizeSpec,
     TestReport,
     TestResult,
 )
 
+# ── Fixtures ────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def mock_sandbox() -> AsyncMock:
-    """Return a mock PerfSandbox with compile_and_run as an AsyncMock."""
+    """Return a mock PerfSandbox with compile_and_run_sized as an AsyncMock."""
     sandbox = AsyncMock()
-    sandbox.compile_and_run = AsyncMock()
+    sandbox.compile_and_run_sized = AsyncMock()
     return sandbox
 
 
@@ -32,19 +42,57 @@ def processor(mock_sandbox: AsyncMock) -> TurnProcessor:
     return TurnProcessor(mock_sandbox)
 
 
-# Common kwargs shared across process() calls.
-_BASE_KWARGS = {
+_SMALL = SizeSpec(label="small", n=256)
+_LARGE = SizeSpec(label="large", n=1024)
+_PERF_INPUTS_TWO = [
+    SizedPerfInput(spec=_SMALL, data=b"\xff" * 4),
+    SizedPerfInput(spec=_LARGE, data=b"\xff" * 16),
+]
+
+
+def _success_result(
+    *,
+    small_cycles: float = 5_000.0,
+    large_cycles: float = 20_000.0,
+    small_ms: float | None = 0.5,
+    large_ms: float | None = 2.0,
+) -> SizedExecutionResult:
+    return SizedExecutionResult(
+        compilation=CompilationSuccess(),
+        test_report=TestReport(results=(TestResult(name="t0", passed=True),)),
+        measurements=(
+            SizedMeasurement(
+                spec=_SMALL,
+                perf_counters=PerfCounters(cycles=small_cycles, instructions=10_000.0),
+                wall_clock_ms=small_ms,
+            ),
+            SizedMeasurement(
+                spec=_LARGE,
+                perf_counters=PerfCounters(cycles=large_cycles, instructions=40_000.0),
+                wall_clock_ms=large_ms,
+            ),
+        ),
+    )
+
+
+_BASE_KWARGS: dict = {
     "test_inputs": [b"\x01"],
     "expected_outputs": [b"\x02"],
-    "perf_input": b"\xff",
+    "perf_inputs": _PERF_INPUTS_TWO,
     "comparison": "exact",
     "tolerance": None,
-    "reference_perf": {"cycles": 10_000.0, "instructions": 20_000.0},
-    "best_perf_dict": None,
-    "best_wall_clock_ms": None,
+    "reference_perf_by_size": {
+        "small": {"cycles": 10_000.0, "instructions": 20_000.0},
+        "large": {"cycles": 40_000.0, "instructions": 80_000.0},
+    },
+    "best_perf_by_size": {},
+    "best_wall_clock_ms_by_size": {},
     "turn": 1,
     "max_turns": 5,
 }
+
+
+# ── Test classes ────────────────────────────────────────────────────────────
 
 
 class TestNoCodeFound:
@@ -59,7 +107,7 @@ class TestNoCodeFound:
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
         await processor.process(code=None, **_BASE_KWARGS)
-        mock_sandbox.compile_and_run.assert_not_called()
+        mock_sandbox.compile_and_run_sized.assert_not_called()
 
 
 class TestCompilationFailure:
@@ -67,13 +115,12 @@ class TestCompilationFailure:
     async def test_returns_compile_error_feedback(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
+        mock_sandbox.compile_and_run_sized.return_value = SizedExecutionResult(
             compilation=CompilationFailure(
                 outcome=CompilationOutcome.ERROR, stderr="undefined reference to 'foo'"
             ),
             test_report=None,
-            perf_counters=None,
-            wall_clock_ms=None,
+            measurements=(),
         )
         outcome = await processor.process(code="int main() {}", **_BASE_KWARGS)
         assert "Compilation failed" in outcome.feedback
@@ -86,7 +133,7 @@ class TestTestFailure:
     async def test_returns_test_failure_feedback(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
+        mock_sandbox.compile_and_run_sized.return_value = SizedExecutionResult(
             compilation=CompilationSuccess(),
             test_report=TestReport(
                 results=(
@@ -94,8 +141,7 @@ class TestTestFailure:
                     TestResult(name="test_2", passed=False, error="wrong output"),
                 )
             ),
-            perf_counters=None,
-            wall_clock_ms=None,
+            measurements=(),
         )
         outcome = await processor.process(code="int main() {}", **_BASE_KWARGS)
         assert "Tests failed" in outcome.feedback
@@ -105,73 +151,101 @@ class TestTestFailure:
 
 class TestPerfSuccess:
     @pytest.mark.asyncio
-    async def test_returns_perf_feedback(
+    async def test_returns_perf_feedback_and_initial_best(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=5_000.0, instructions=15_000.0),
-            wall_clock_ms=1.5,
+        mock_sandbox.compile_and_run_sized.return_value = _success_result(
+            small_cycles=5_000.0, large_cycles=20_000.0,
         )
         outcome = await processor.process(code="int main() {}", **_BASE_KWARGS)
         assert "All tests passed" in outcome.feedback
         assert outcome.state_updates["correct_submissions_delta"] == 1
-        assert outcome.state_updates["best_perf_dict"] == {
-            "cycles": 5_000.0,
-            "instructions": 15_000.0,
-        }
-        assert outcome.state_updates["best_wall_clock_ms"] == 1.5
+        # First submission becomes the best per-label
+        bp = outcome.state_updates["best_perf_by_size"]
+        assert bp["small"]["cycles"] == 5_000.0
+        assert bp["large"]["cycles"] == 20_000.0
+        bw = outcome.state_updates["best_wall_clock_ms_by_size"]
+        assert bw["small"] == 0.5
+        assert bw["large"] == 2.0
 
     @pytest.mark.asyncio
-    async def test_updates_best_when_improved(
+    async def test_updates_best_when_largest_improves(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        """When new score beats existing best, best_perf_dict should update."""
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=3_000.0, instructions=15_000.0),
-            wall_clock_ms=0.8,
+        """Whole submission wins when largest-size cycles improves vs. best."""
+        mock_sandbox.compile_and_run_sized.return_value = _success_result(
+            small_cycles=4_000.0, large_cycles=15_000.0,
         )
         kwargs = {
             **_BASE_KWARGS,
-            "best_perf_dict": {"cycles": 7_000.0, "instructions": 15_000.0},
-            "best_wall_clock_ms": 2.0,
+            "best_perf_by_size": {
+                "small": {"cycles": 5_000.0},
+                "large": {"cycles": 25_000.0},
+            },
+            "best_wall_clock_ms_by_size": {"small": 0.6, "large": 3.0},
         }
         outcome = await processor.process(code="int main() {}", **kwargs)
-        assert "best_perf_dict" in outcome.state_updates
-        assert outcome.state_updates["best_perf_dict"]["cycles"] == 3_000.0
+        assert "best_perf_by_size" in outcome.state_updates
+        assert outcome.state_updates["best_perf_by_size"]["large"]["cycles"] == 15_000.0
+        # The whole submission replaced the prior best — small also updated atomically
+        assert outcome.state_updates["best_perf_by_size"]["small"]["cycles"] == 4_000.0
 
     @pytest.mark.asyncio
-    async def test_does_not_update_best_when_worse(
+    async def test_does_not_update_when_largest_worse(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        """When new score is worse, best_perf_dict should NOT be in updates."""
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=9_000.0, instructions=15_000.0),
-            wall_clock_ms=3.0,
+        """Whole submission loses when largest-size cycles regresses."""
+        mock_sandbox.compile_and_run_sized.return_value = _success_result(
+            small_cycles=1_000.0, large_cycles=30_000.0,  # large regressed
         )
         kwargs = {
             **_BASE_KWARGS,
-            "best_perf_dict": {"cycles": 5_000.0, "instructions": 15_000.0},
-            "best_wall_clock_ms": 1.5,
+            "best_perf_by_size": {
+                "small": {"cycles": 5_000.0},
+                "large": {"cycles": 25_000.0},
+            },
+            "best_wall_clock_ms_by_size": {"small": 0.6, "large": 3.0},
         }
         outcome = await processor.process(code="int main() {}", **kwargs)
-        assert "best_perf_dict" not in outcome.state_updates
+        assert "best_perf_by_size" not in outcome.state_updates
+        assert "best_wall_clock_ms_by_size" not in outcome.state_updates
+
+    @pytest.mark.asyncio
+    async def test_largest_size_failed_does_not_promote(
+        self, processor: TurnProcessor, mock_sandbox: AsyncMock
+    ) -> None:
+        """Failed largest-size measurement keeps previous best, even if smaller succeeded."""
+        result = SizedExecutionResult(
+            compilation=CompilationSuccess(),
+            test_report=TestReport(results=(TestResult(name="t0", passed=True),)),
+            measurements=(
+                SizedMeasurement(
+                    spec=_SMALL,
+                    perf_counters=PerfCounters(cycles=2_000.0, instructions=4_000.0),
+                    wall_clock_ms=0.4,
+                ),
+                # large measurement failed (e.g. timeout)
+                SizedMeasurement(spec=_LARGE, perf_counters=None, wall_clock_ms=None),
+            ),
+        )
+        mock_sandbox.compile_and_run_sized.return_value = result
+        kwargs = {
+            **_BASE_KWARGS,
+            "best_perf_by_size": {
+                "small": {"cycles": 5_000.0},
+                "large": {"cycles": 25_000.0},
+            },
+            "best_wall_clock_ms_by_size": {"small": 0.6, "large": 3.0},
+        }
+        outcome = await processor.process(code="int main() {}", **kwargs)
+        # Even though small improved, we did NOT promote because large failed
+        assert "best_perf_by_size" not in outcome.state_updates
 
     @pytest.mark.asyncio
     async def test_correctness_feedback_hides_counters(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=5_000.0, instructions=15_000.0),
-            wall_clock_ms=1.5,
-        )
+        mock_sandbox.compile_and_run_sized.return_value = _success_result()
         outcome = await processor.process(
             code="int main() {}",
             **_BASE_KWARGS,
@@ -179,52 +253,32 @@ class TestPerfSuccess:
         )
         assert "All tests passed" in outcome.feedback
         assert "cycles" not in outcome.feedback
-        mock_sandbox.compile_and_run.assert_awaited_once()
+        mock_sandbox.compile_and_run_sized.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_benchmark_selection_uses_cycles(
+    async def test_benchmark_selection_wall_clock(
         self, processor: TurnProcessor, mock_sandbox: AsyncMock
     ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=4_000.0, instructions=15_000.0),
-            wall_clock_ms=9.0,
+        """selection_metric=wall_clock_ms uses wall_clock at largest size."""
+        mock_sandbox.compile_and_run_sized.return_value = _success_result(
+            large_cycles=30_000.0,  # cycles regressed
+            large_ms=1.0,  # but wall_clock improved
         )
         kwargs = {
             **_BASE_KWARGS,
-            "best_perf_dict": {"cycles": 5_000.0, "instructions": 10_000.0},
-            "best_wall_clock_ms": 1.0,
-        }
-        outcome = await processor.process(
-            code="int main() {}",
-            **kwargs,
-            selection_metric="cycles",
-        )
-        assert outcome.state_updates["best_perf_dict"]["cycles"] == 4_000.0
-
-    @pytest.mark.asyncio
-    async def test_benchmark_selection_can_use_wall_clock(
-        self, processor: TurnProcessor, mock_sandbox: AsyncMock
-    ) -> None:
-        mock_sandbox.compile_and_run.return_value = ExecutionResult(
-            compilation=CompilationSuccess(),
-            test_report=TestReport(results=(TestResult(name="test_1", passed=True),)),
-            perf_counters=PerfCounters(cycles=9_000.0, instructions=15_000.0),
-            wall_clock_ms=0.8,
-        )
-        kwargs = {
-            **_BASE_KWARGS,
-            "best_perf_dict": {"cycles": 5_000.0, "instructions": 10_000.0},
-            "best_wall_clock_ms": 1.0,
+            "best_perf_by_size": {
+                "small": {"cycles": 5_000.0},
+                "large": {"cycles": 25_000.0},
+            },
+            "best_wall_clock_ms_by_size": {"small": 0.6, "large": 3.0},
         }
         outcome = await processor.process(
             code="int main() {}",
             **kwargs,
             selection_metric="wall_clock_ms",
         )
-        assert outcome.state_updates["best_perf_dict"]["cycles"] == 9_000.0
-        assert outcome.state_updates["best_wall_clock_ms"] == 0.8
+        assert "best_perf_by_size" in outcome.state_updates
+        assert outcome.state_updates["best_wall_clock_ms_by_size"]["large"] == 1.0
 
 
 class TestPerfMeasurementFailure:
@@ -234,7 +288,7 @@ class TestPerfMeasurementFailure:
     ) -> None:
         from perf_optimize.exceptions import PerfMeasurementError
 
-        mock_sandbox.compile_and_run.side_effect = PerfMeasurementError("PMU busy")
+        mock_sandbox.compile_and_run_sized.side_effect = PerfMeasurementError("PMU busy")
         outcome = await processor.process(code="int main() {}", **_BASE_KWARGS)
         assert "perf measurement unavailable" in outcome.feedback
         assert "PMU busy" in outcome.feedback

@@ -7,8 +7,11 @@ variance statistics.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
 # All PerfCounters field names that correspond to hardware counters.
 # Used by HardwareProfile and the parser to validate field mappings.
@@ -208,6 +211,80 @@ class CounterVarianceStats:
     def passed(self) -> bool:
         """Whether the coefficient of variation is below the threshold."""
         return self.cv < self.threshold
+
+
+@dataclass(frozen=True, slots=True)
+class SizeSpec:
+    """A named scale parameter for a perf input.
+
+    ``label`` must be a non-empty alphanumeric/underscore identifier (used as
+    a filename component). ``n`` must be a positive integer (problem-defined
+    scale parameter, monotone-comparable).
+    """
+
+    label: str
+    n: int
+
+    def __post_init__(self) -> None:
+        if not self.label or not _LABEL_PATTERN.match(self.label):
+            raise ValueError(
+                f"label must be non-empty alphanumeric/underscore, got {self.label!r}"
+            )
+        if self.n <= 0:
+            raise ValueError(f"n must be positive, got {self.n}")
+
+
+@dataclass(frozen=True, slots=True)
+class SizedPerfInput:
+    """Binds a SizeSpec to its raw perf-input bytes.
+
+    Used by the sandbox to drive per-size measurement runs.
+    """
+
+    spec: SizeSpec
+    data: bytes
+
+    def __post_init__(self) -> None:
+        if not self.data:
+            raise ValueError(f"data must be non-empty for size {self.spec.label}")
+
+
+@dataclass(frozen=True, slots=True)
+class SizedMeasurement:
+    """A single per-size perf measurement outcome.
+
+    ``perf_counters`` and ``wall_clock_ms`` are both ``None`` when the measurement
+    failed (e.g., timeout, crash). ``succeeded`` requires both to be present.
+    """
+
+    spec: SizeSpec
+    perf_counters: PerfCounters | None
+    wall_clock_ms: float | None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.perf_counters is not None and self.wall_clock_ms is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SizedExecutionResult:
+    """Result of compile-test-measure with per-size perf measurements.
+
+    Compiles once, runs tests once, then iterates sizes for perf measurement.
+    ``measurements`` is empty when compilation or tests failed.
+    """
+
+    compilation: CompilationResult
+    test_report: TestReport | None
+    measurements: tuple[SizedMeasurement, ...]
+
+    @property
+    def compiled(self) -> bool:
+        return isinstance(self.compilation, CompilationSuccess)
+
+    @property
+    def all_tests_passed(self) -> bool:
+        return self.test_report is not None and self.test_report.all_passed
 
 
 @dataclass(frozen=True)

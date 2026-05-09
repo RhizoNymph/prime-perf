@@ -9,17 +9,10 @@ they describe HOW the candidate is winning without affecting the score:
 - Instructions retired down        ⇒ algorithmic win (smarter logic,
   fewer operations).
 
-State shape today (this branch reads from the singular fields):
-    state["best_perf_dict"]: dict[str, float] | None  # best correct candidate
-    state["reference_perf"]: dict[str, float] | None  # naive baseline
-
-NOTE on merge with ``feat/scaling-test``: that sibling branch reshapes state
-to per-size dicts ``state["best_perf_by_size"][label]`` and
-``state["reference_perf_by_size"][label]``. At merge time, each function below
-should be rewired to read ``state["best_perf_by_size"][largest_label]`` and
-``state["reference_perf_by_size"][largest_label]`` (the largest-label helper
-is expected to be exposed from ``perf_optimize.scaling`` or
-``perf_optimize.reward`` post-merge).
+All metrics read from the largest-size entries of the per-size state dicts
+(``state["best_perf_by_size"][largest_label]`` and
+``state["reference_perf_by_size"][largest_label]``) so they're aligned with
+the headline cycles-speedup-at-largest reward.
 """
 
 from __future__ import annotations
@@ -41,12 +34,27 @@ def _safe_float(value: Any) -> float:
     return result
 
 
+def _largest_perf(state: dict[str, Any], by_size_key: str) -> dict[str, Any]:
+    """Return the largest-size counter dict from ``state[by_size_key]``.
+
+    Reads the largest label off ``state["perf_inputs"]`` (list of
+    ``(label, n, data)`` tuples) and returns the matching dict, or {} if
+    nothing usable is present.
+    """
+    from .reward import _largest_label
+
+    label = _largest_label(state)
+    if label is None:
+        return {}
+    return (state.get(by_size_key) or {}).get(label) or {}
+
+
 def candidate_instructions(state: dict[str, Any], **_kwargs: Any) -> float:
     """Total instructions retired by the best correct candidate (raw count).
 
     Returns 0.0 if no correct submission exists or the value is non-finite.
     """
-    best = state.get("best_perf_dict") or {}
+    best = _largest_perf(state, "best_perf_by_size")
     return _safe_float(best.get("instructions"))
 
 
@@ -55,7 +63,7 @@ def reference_instructions(state: dict[str, Any], **_kwargs: Any) -> float:
 
     Returns 0.0 if the problem lacks a reference or the value is non-finite.
     """
-    ref = state.get("reference_perf") or {}
+    ref = _largest_perf(state, "reference_perf_by_size")
     return _safe_float(ref.get("instructions"))
 
 
@@ -64,7 +72,7 @@ def candidate_ipc(state: dict[str, Any], **_kwargs: Any) -> float:
 
     Returns 0.0 if cycles <= 0, instructions <= 0, missing, or non-finite.
     """
-    best = state.get("best_perf_dict") or {}
+    best = _largest_perf(state, "best_perf_by_size")
     cycles = _safe_float(best.get("cycles"))
     instr = _safe_float(best.get("instructions"))
     if cycles <= 0 or instr <= 0:
@@ -77,7 +85,7 @@ def reference_ipc(state: dict[str, Any], **_kwargs: Any) -> float:
 
     Returns 0.0 if cycles <= 0, instructions <= 0, missing, or non-finite.
     """
-    ref = state.get("reference_perf") or {}
+    ref = _largest_perf(state, "reference_perf_by_size")
     cycles = _safe_float(ref.get("cycles"))
     instr = _safe_float(ref.get("instructions"))
     if cycles <= 0 or instr <= 0:
