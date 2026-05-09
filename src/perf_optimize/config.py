@@ -75,6 +75,11 @@ class SandboxConfig:
     compile_timeout_s: float = 30.0
     test_timeout_s: float = 10.0
     perf_timeout_s: float = 60.0
+    # Timeout budget for the largest sized perf input. Defaults to
+    # ``perf_timeout_s * 1.5`` when unset (None). Used by
+    # ``PerfSandbox.measure_sized`` / ``compile_and_run_sized`` to give the
+    # most expensive measurement a bit of extra headroom.
+    largest_size_perf_timeout_s: float | None = None
     perf_repeat: int = 5
     pin_cpu: int = 0
     ulimit_mem_kb: int = 512_000
@@ -114,6 +119,7 @@ class SandboxConfig:
             "compile_timeout_s",
             "test_timeout_s",
             "perf_timeout_s",
+            "largest_size_perf_timeout_s",
             "cv_threshold_cycles",
             "cv_threshold_cache",
         ):
