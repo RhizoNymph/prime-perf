@@ -1,6 +1,10 @@
 """Turn processing logic for the perf-optimize environment.
 
 Decoupled from the verifiers SDK -- operates on plain dicts and dataclasses.
+
+In the sized perf-input layout, ``best_perf_by_size`` and
+``best_wall_clock_ms_by_size`` track per-label bests, and the whole
+submission wins or loses on the largest-size selection metric.
 """
 
 from __future__ import annotations
@@ -30,7 +34,9 @@ from .reward import PERF_WEIGHT_MAP, compute_weighted_improvement
 from .types import (
     CompilationFailure,
     CompilationSuccess,
-    ExecutionResult,
+    SizedExecutionResult,
+    SizedMeasurement,
+    SizedPerfInput,
     TestReport,
     TestResult,
 )
@@ -66,12 +72,12 @@ class TurnProcessor:
         *,
         test_inputs: list[bytes],
         expected_outputs: list[bytes],
-        perf_input: bytes,
+        perf_inputs: list[SizedPerfInput],
         comparison: ComparisonConfig | str,
         tolerance: float | None = None,
-        reference_perf: dict[str, float] | None,
-        best_perf_dict: dict[str, float] | None,
-        best_wall_clock_ms: float | None,
+        reference_perf_by_size: dict[str, dict[str, float] | None] | None,
+        best_perf_by_size: dict[str, dict[str, float]],
+        best_wall_clock_ms_by_size: dict[str, float],
         turn: int,
         max_turns: int,
         feedback_mode: str = "full",
@@ -83,13 +89,14 @@ class TurnProcessor:
             code: Extracted source code, or None if no code block found.
             test_inputs: Binary test inputs for correctness checking.
             expected_outputs: Expected binary outputs for correctness checking.
-            perf_input: Binary input for performance measurement.
+            perf_inputs: Per-size perf inputs (sorted ascending by ``n``).
             comparison: Comparison config, or mode string (e.g. "exact").
             tolerance: Optional tolerance for float comparison (used when
                 comparison is passed as a string).
-            reference_perf: Reference perf counters from naive solution.
-            best_perf_dict: Best perf counters seen so far, or None.
-            best_wall_clock_ms: Best wall clock time seen so far, or None.
+            reference_perf_by_size: Per-size reference perf counters from
+                naive solution (None values mean "no baseline available").
+            best_perf_by_size: Per-size best counters seen so far.
+            best_wall_clock_ms_by_size: Per-size best wall-clock seen so far.
             turn: Current turn number.
             max_turns: Maximum number of turns.
             feedback_mode: ``"full"`` shows performance counters; ``"correctness"``
@@ -109,11 +116,11 @@ class TurnProcessor:
 
         perf_error: str | None = None
         try:
-            result = await self._sandbox.compile_and_run(
+            result = await self._sandbox.compile_and_run_sized(
                 source_code=code,
                 test_inputs=test_inputs,
                 expected_outputs=expected_outputs,
-                perf_input=perf_input,
+                perf_inputs=perf_inputs,
                 comparison=comparison,
             )
         except (
@@ -125,11 +132,13 @@ class TurnProcessor:
         ) as exc:
             logger.warning("perf_measurement_failed", error=str(exc))
             perf_error = str(exc)
-            result = ExecutionResult(
+            result = SizedExecutionResult(
                 compilation=CompilationSuccess(),
                 test_report=TestReport(results=(TestResult(name="assumed", passed=True),)),
-                perf_counters=None,
-                wall_clock_ms=None,
+                measurements=tuple(
+                    SizedMeasurement(spec=p.spec, perf_counters=None, wall_clock_ms=None)
+                    for p in perf_inputs
+                ),
             )
         except SandboxError as exc:
             logger.warning("sandbox_infrastructure_error", error=str(exc))
@@ -161,29 +170,53 @@ class TurnProcessor:
         # Tests passed
         updates: dict[str, Any] = {"correct_submissions_delta": 1}
 
-        if result.perf_counters is not None:
-            agent_perf = result.perf_counters.to_dict()
-            ref_perf = reference_perf or {}
-            if best_perf_dict is None:
-                updates["best_perf_dict"] = agent_perf
-                updates["best_wall_clock_ms"] = result.wall_clock_ms
-            else:
-                if _is_better_submission(
+        if result.measurements:
+            largest_label = _largest_label(perf_inputs)
+            largest_measurement = next(
+                (m for m in result.measurements if m.spec.label == largest_label),
+                None,
+            )
+
+            should_promote = (
+                largest_measurement is not None
+                and largest_measurement.succeeded
+                and _is_better_submission(
                     selection_metric=selection_metric,
-                    ref_perf=ref_perf,
-                    agent_perf=agent_perf,
-                    agent_wall_clock_ms=result.wall_clock_ms,
-                    best_perf_dict=best_perf_dict,
-                    best_wall_clock_ms=best_wall_clock_ms,
-                ):
-                    updates["best_perf_dict"] = agent_perf
-                    updates["best_wall_clock_ms"] = result.wall_clock_ms
+                    largest_label=largest_label,
+                    largest_measurement=largest_measurement,
+                    reference_perf_by_size=reference_perf_by_size or {},
+                    best_perf_by_size=best_perf_by_size,
+                    best_wall_clock_ms_by_size=best_wall_clock_ms_by_size,
+                )
+            )
+
+            if should_promote:
+                new_best_perf, new_best_wall = _measurements_to_dicts(result.measurements)
+                updates["best_perf_by_size"] = new_best_perf
+                updates["best_wall_clock_ms_by_size"] = new_best_wall
+
+            largest_perf = (
+                largest_measurement.perf_counters.to_dict()
+                if largest_measurement is not None and largest_measurement.perf_counters is not None
+                else {}
+            )
+            ref_perf_largest = (reference_perf_by_size or {}).get(largest_label) or {}
 
             if feedback_mode == "correctness":
                 feedback = format_correctness_feedback(turn, max_turns)
-            else:
+            elif largest_perf:
                 feedback = format_perf_feedback(
-                    agent_perf, ref_perf, turn, max_turns, rewarded_counters=_REWARDED_COUNTERS
+                    largest_perf,
+                    ref_perf_largest,
+                    turn,
+                    max_turns,
+                    rewarded_counters=_REWARDED_COUNTERS,
+                )
+            else:
+                detail = f": {perf_error}" if perf_error else ""
+                feedback = (
+                    f"**All tests passed** (turn {turn}/{max_turns}), "
+                    f"but perf measurement unavailable at largest size{detail}. Try again."
                 )
         else:
             detail = f": {perf_error}" if perf_error else ""
@@ -195,27 +228,57 @@ class TurnProcessor:
         return TurnOutcome(feedback=feedback, state_updates=updates)
 
 
+def _largest_label(perf_inputs: list[SizedPerfInput]) -> str:
+    """Return the label of the largest input. Caller guarantees non-empty."""
+    largest = max(perf_inputs, key=lambda p: p.spec.n)
+    return largest.spec.label
+
+
+def _measurements_to_dicts(
+    measurements: tuple[SizedMeasurement, ...],
+) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+    """Convert sized measurements into per-label dicts for state storage.
+
+    Skips entries where the measurement failed.
+    """
+    by_perf: dict[str, dict[str, float]] = {}
+    by_wall: dict[str, float] = {}
+    for m in measurements:
+        if m.perf_counters is not None:
+            by_perf[m.spec.label] = m.perf_counters.to_dict()
+        if m.wall_clock_ms is not None:
+            by_wall[m.spec.label] = m.wall_clock_ms
+    return by_perf, by_wall
+
+
 def _is_better_submission(
     *,
     selection_metric: str,
-    ref_perf: dict[str, float],
-    agent_perf: dict[str, float],
-    agent_wall_clock_ms: float | None,
-    best_perf_dict: dict[str, float],
-    best_wall_clock_ms: float | None,
+    largest_label: str,
+    largest_measurement: SizedMeasurement,
+    reference_perf_by_size: dict[str, dict[str, float] | None],
+    best_perf_by_size: dict[str, dict[str, float]],
+    best_wall_clock_ms_by_size: dict[str, float],
 ) -> bool:
-    """Return whether the new correct submission should replace the current best."""
+    """Decide whether the new submission replaces the current best.
+
+    Selection key is always the largest-size measurement; the whole
+    submission wins or loses (no per-size mosaic of winners).
+    """
     if selection_metric == "wall_clock_ms":
-        return (
-            agent_wall_clock_ms is not None
-            and (best_wall_clock_ms is None or agent_wall_clock_ms < best_wall_clock_ms)
-        )
+        agent_ms = largest_measurement.wall_clock_ms
+        best_ms = best_wall_clock_ms_by_size.get(largest_label)
+        return agent_ms is not None and (best_ms is None or agent_ms < best_ms)
+
+    agent_counters = largest_measurement.perf_counters.to_dict() if largest_measurement.perf_counters else {}
+    best_counters = best_perf_by_size.get(largest_label, {})
 
     if selection_metric != "counter_reward":
-        agent_value = agent_perf.get(selection_metric)
-        best_value = best_perf_dict.get(selection_metric)
+        agent_value = agent_counters.get(selection_metric)
+        best_value = best_counters.get(selection_metric)
         return agent_value is not None and (best_value is None or agent_value < best_value)
 
-    new_score = compute_weighted_improvement(ref_perf, agent_perf)
-    best_score = compute_weighted_improvement(ref_perf, best_perf_dict)
+    ref_counters = reference_perf_by_size.get(largest_label) or {}
+    new_score = compute_weighted_improvement(ref_counters, agent_counters)
+    best_score = compute_weighted_improvement(ref_counters, best_counters) if best_counters else -1.0
     return new_score > best_score

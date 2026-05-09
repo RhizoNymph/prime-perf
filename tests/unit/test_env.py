@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -113,22 +113,38 @@ class TestHasSubmit:
 
 class TestSetupState:
     @pytest.mark.asyncio
-    async def test_decodes_test_data(self) -> None:
-        """setup_state should decode base64 test data from info."""
+    async def test_decodes_per_size_perf_inputs(self) -> None:
+        """setup_state should decode base64 per-size perf inputs from info."""
         from perf_optimize.env import PerfOptimizeEnv
 
         test_input = b"\x01\x02\x03"
         expected_output = b"\x04\x05\x06"
-        perf_input = b"\xff" * 10
+        small_data = b"S" * 10
+        large_data = b"L" * 40
 
         state = {
             "info": {
                 "test_inputs": [base64.b64encode(test_input).decode()],
                 "expected_outputs": [base64.b64encode(expected_output).decode()],
-                "perf_input": base64.b64encode(perf_input).decode(),
+                "perf_inputs": [
+                    {
+                        "label": "small",
+                        "n": 256,
+                        "data_b64": base64.b64encode(small_data).decode(),
+                    },
+                    {
+                        "label": "large",
+                        "n": 1024,
+                        "data_b64": base64.b64encode(large_data).decode(),
+                    },
+                ],
                 "comparison": "exact",
                 "tolerance": None,
-                "reference_perf": {"cycles": 1000.0, "instructions": 2000.0},
+                "reference_perf_by_size": {
+                    "small": {"cycles": 1000.0, "instructions": 2000.0},
+                    "large": {"cycles": 4000.0, "instructions": 8000.0},
+                },
+                "reference_wall_clock_ms_by_size": {"small": 0.5, "large": 2.0},
             },
             "prompt": [],
             "completion": [],
@@ -141,10 +157,16 @@ class TestSetupState:
 
         assert result["test_inputs"] == [test_input]
         assert result["expected_outputs"] == [expected_output]
-        assert result["perf_input"] == perf_input
+        # perf_inputs should be a list of (label, n, data) tuples
+        pis = result["perf_inputs"]
+        assert len(pis) == 2
+        assert pis[0] == ("small", 256, small_data)
+        assert pis[1] == ("large", 1024, large_data)
         assert result["comparison"] == "exact"
-        assert result["reference_perf"] == {"cycles": 1000.0, "instructions": 2000.0}
-        assert result["best_perf_dict"] is None
+        assert result["reference_perf_by_size"]["large"]["cycles"] == 4000.0
+        assert result["reference_wall_clock_ms_by_size"]["large"] == 2.0
+        assert result["best_perf_by_size"] == {}
+        assert result["best_wall_clock_ms_by_size"] == {}
         assert result["submitted"] is False
         assert result["compile_failures"] == 0
         assert result["test_failures"] == 0
@@ -158,27 +180,34 @@ class TestSandboxErrorHandling:
     async def test_bwrap_invocation_error_returns_feedback(self) -> None:
         from perf_optimize.env import PerfOptimizeEnv
         from perf_optimize.exceptions import BwrapInvocationError
+        from perf_optimize.types import SizedPerfInput, SizeSpec
 
         state = {
             "test_inputs": [b"input"],
             "expected_outputs": [b"output"],
-            "perf_input": b"perf",
+            "perf_inputs": [
+                ("small", 256, b"perf-small"),
+                ("large", 1024, b"perf-large"),
+            ],
             "comparison": "exact",
             "tolerance": None,
-            "reference_perf": {"cycles": 1000.0},
-            "best_perf_dict": None,
-            "best_wall_clock_ms": None,
+            "reference_perf_by_size": {"large": {"cycles": 1000.0}},
+            "reference_wall_clock_ms_by_size": {"large": 1.0},
+            "best_perf_by_size": {},
+            "best_wall_clock_ms_by_size": {},
             "submitted": False,
             "compile_failures": 0,
             "test_failures": 0,
             "correct_submissions": 0,
         }
+        # Smoke-touch SizedPerfInput/SizeSpec so unused-import lints stay quiet.
+        _ = SizedPerfInput(spec=SizeSpec(label="x", n=1), data=b"\x00")
 
         content = '<code lang="c">int main() { return 0; }</code>'
 
         env = PerfOptimizeEnv.__new__(PerfOptimizeEnv)
         env._sandbox = AsyncMock()
-        env._sandbox.compile_and_run = AsyncMock(
+        env._sandbox.compile_and_run_sized = AsyncMock(
             side_effect=BwrapInvocationError("bwrap failed to start")
         )
 

@@ -1,0 +1,11 @@
+[[sizes]]
+label = "small"
+n = 512
+
+[[sizes]]
+label = "medium"
+n = 1024
+
+[[sizes]]
+label = "large"
+n = 1536

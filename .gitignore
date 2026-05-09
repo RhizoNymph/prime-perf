@@ -23,6 +23,10 @@ environments
 # Perf references
 *.bin
 problems/*/*.bin
+# But DO commit per-size sized perf inputs and the tests/expected pairs that
+# define the problem bank — without these, the environment cannot be loaded.
+!problems/*/perf_inputs/*.bin
+!problems/*/tests/*.bin
 
 AGENTS.md
 CLAUDE.md
