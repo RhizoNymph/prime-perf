@@ -68,6 +68,12 @@ produce correct code (-1.0 compile fail, -0.5 test fail, 0.0 correct). `perf_rew
 computes weighted improvement across available perf counters, with automatic weight
 renormalization for missing counters (e.g. AMD lacks LLC-load-misses).
 
+### Diagnostics (`src/perf_optimize/diagnostics.py`)
+Pure functions exposing IPC (instructions-per-cycle) and instructions-retired as
+`weight=0` rubric metrics. They do not affect the score; they characterize HOW the
+candidate is winning — IPC up implies a microarchitectural win, instructions down
+implies an algorithmic win.
+
 ### Prompts (`src/perf_optimize/prompts.py`)
 System prompt template and feedback message formatters. Feedback is structured markdown
 showing compilation errors, test failures, or perf counter values with improvement
@@ -217,6 +223,12 @@ load_environment(language, max_turns)
 - entry_points: [compute_weighted_improvement, correctness_gate, perf_reward]
 - depends_on: []
 - doc: docs/features/verifiers_environment.md
+
+### diagnostics
+- description: IPC and instructions diagnostic metrics (weight=0) attached to the rubric
+- entry_points: [candidate_instructions, reference_instructions, candidate_ipc, reference_ipc, ipc_delta, instructions_ratio, _attach_ipc_metrics]
+- depends_on: []
+- doc: docs/features/diagnostics.md
 
 ### prompts
 - description: System prompt template and structured feedback formatters
