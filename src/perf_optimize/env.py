@@ -18,6 +18,14 @@ from verifiers.envs.multiturn_env import MultiTurnEnv
 from verifiers.rubrics.rubric import Rubric
 
 from .config import SandboxConfig, _detect_unshare_net
+from .exceptions import SandboxError
+from .heldout import (
+    cycles_speedup_indist_minus_heldout,
+    heldout_correctness_pass_rate,
+    heldout_correctness_passed,
+    heldout_cycles_speedup,
+    heldout_wall_clock_ms,
+)
 from .languages import Language
 from .problems import build_dataset_rows
 from .processor import TurnProcessor
@@ -48,6 +56,20 @@ class PerfOptimizeState(TypedDict):
     compile_failures: int
     test_failures: int
     correct_submissions: int
+    # Held-out evaluation fields. Namespaced ``heldout_*`` to keep merges with
+    # the sibling ``feat/scaling-test`` branch (which rewrites the singular
+    # in-dist fields above into ``_by_size`` dicts) additive.
+    best_candidate_source: str | None
+    heldout_test_inputs: list[bytes]
+    heldout_expected_outputs: list[bytes]
+    heldout_perf_input: bytes
+    reference_heldout_perf: dict[str, float] | None
+    reference_heldout_wall_clock_ms: float | None
+    heldout_test_passed: bool | None
+    heldout_test_total: int
+    heldout_test_passed_count: int
+    heldout_best_perf: dict[str, float] | None
+    heldout_best_wall_clock_ms: float | None
 
 
 # For extraction: find opening tags
@@ -113,6 +135,20 @@ def _has_submit(text: str) -> bool:
     stripped = _CODE_STRIP_PATTERN.sub("", text)
     stripped = _MARKDOWN_FENCE_PATTERN.sub("", stripped)
     return _SUBMIT_PATTERN.search(stripped) is not None
+
+
+def _attach_heldout_metrics(rubric: Rubric) -> None:
+    """Attach held-out diagnostic metrics to a rubric (all weight=0).
+
+    Kept as a small standalone helper so it merges additively alongside the
+    sibling branches (``feat/scaling-test``, ``feat/ipc-diagnostics``) which
+    each add their own ``_attach_*_metrics`` call near the rubric construction.
+    """
+    rubric.add_metric(heldout_correctness_passed)
+    rubric.add_metric(heldout_correctness_pass_rate)
+    rubric.add_metric(heldout_cycles_speedup)
+    rubric.add_metric(heldout_wall_clock_ms)
+    rubric.add_metric(cycles_speedup_indist_minus_heldout)
 
 
 class PerfOptimizeEnv(MultiTurnEnv):
@@ -190,10 +226,15 @@ class PerfOptimizeEnv(MultiTurnEnv):
 
         reward_func = direct_speedup_reward if reward_mode == "benchmark" else perf_reward
 
+        # NOTE (merge): sibling branches ``feat/scaling-test`` and
+        # ``feat/ipc-diagnostics`` will add their own ``_attach_*_metrics(rubric)``
+        # calls right below this construction. Each call should stay on its
+        # own line so the merges remain additive.
         rubric = Rubric(
             funcs=[correctness_gate, reward_func],
             weights=[1.0, 1.0],
         )
+        _attach_heldout_metrics(rubric)
 
         super().__init__(
             dataset=dataset,
@@ -231,6 +272,30 @@ class PerfOptimizeEnv(MultiTurnEnv):
         state["compile_failures"] = 0
         state["test_failures"] = 0
         state["correct_submissions"] = 0
+
+        # Held-out diagnostic state. Decoded eagerly so the cleanup pass does
+        # not need to re-touch info; namespaced ``heldout_*`` so merges with
+        # the sibling multi-size branch stay additive.
+        heldout_inputs = info.get("heldout_test_inputs") or []
+        heldout_expected = info.get("heldout_expected_outputs") or []
+        heldout_perf_b64 = info.get("heldout_perf_input") or ""
+        state["heldout_test_inputs"] = [base64.b64decode(t) for t in heldout_inputs]
+        state["heldout_expected_outputs"] = [
+            base64.b64decode(t) for t in heldout_expected
+        ]
+        state["heldout_perf_input"] = (
+            base64.b64decode(heldout_perf_b64) if heldout_perf_b64 else b""
+        )
+        state["reference_heldout_perf"] = info.get("reference_heldout_perf")
+        state["reference_heldout_wall_clock_ms"] = info.get(
+            "reference_heldout_wall_clock_ms",
+        )
+        state["best_candidate_source"] = None
+        state["heldout_test_passed"] = None
+        state["heldout_test_total"] = len(state["heldout_test_inputs"])
+        state["heldout_test_passed_count"] = 0
+        state["heldout_best_perf"] = None
+        state["heldout_best_wall_clock_ms"] = None
 
         return state
 
@@ -323,3 +388,88 @@ class PerfOptimizeEnv(MultiTurnEnv):
                 state[key] = value
 
         return [{"role": "user", "content": outcome.feedback}]
+
+    @vf.cleanup
+    async def _run_heldout_pass(self, state: State) -> None:
+        """Recompile the best correct candidate and evaluate on held-out data.
+
+        Diagnostic-only: populates ``heldout_*`` state fields so the rubric's
+        ``weight=0`` metrics (see ``_attach_heldout_metrics``) can surface
+        in-dist vs. held-out divergence. Must not propagate exceptions -- any
+        sandbox failure is logged and the held-out fields stay at their
+        initial null values so the metrics return zero.
+
+        Idempotent: returns immediately if it already populated
+        ``heldout_test_passed``.
+        """
+        # Idempotency guard: cleanup may be invoked multiple times (e.g. on
+        # cancellation paths). Skip if a previous call already produced a
+        # verdict.
+        if state.get("heldout_test_passed") is not None:
+            return
+
+        # Skip cleanly when the rollout never produced a correct submission.
+        if not state.get("correct_submissions", 0):
+            return
+        if not state.get("best_candidate_source"):
+            return
+
+        heldout_inputs = state.get("heldout_test_inputs") or []
+        heldout_expected = state.get("heldout_expected_outputs") or []
+        heldout_perf_input = state.get("heldout_perf_input") or b""
+        if not heldout_inputs or not heldout_perf_input:
+            logger.warning(
+                "heldout_pass_skipped_missing_data",
+                problem=state.get("info", {}).get("problem_name"),
+                heldout_test_count=len(heldout_inputs),
+                heldout_perf_bytes=len(heldout_perf_input),
+            )
+            return
+
+        from .comparison import ComparisonConfig
+
+        comparison = state.get("comparison")
+        if not isinstance(comparison, ComparisonConfig):
+            from .comparison import ComparisonMode
+
+            comparison = ComparisonConfig(
+                mode=ComparisonMode(state.get("comparison", "exact")),
+                tolerance=state.get("tolerance"),
+            )
+
+        try:
+            result = await self._sandbox.compile_and_run(
+                source_code=state["best_candidate_source"],
+                test_inputs=list(heldout_inputs),
+                expected_outputs=list(heldout_expected),
+                perf_input=heldout_perf_input,
+                comparison=comparison,
+            )
+        except SandboxError as exc:
+            logger.warning(
+                "heldout_pass_sandbox_error",
+                error=str(exc),
+                problem=state.get("info", {}).get("problem_name"),
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 -- diagnostic must not crash
+            logger.warning(
+                "heldout_pass_unexpected_error",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                problem=state.get("info", {}).get("problem_name"),
+            )
+            return
+
+        report = result.test_report
+        passed_count = report.passed if report is not None else 0
+        total = report.total if report is not None else len(heldout_inputs)
+        all_passed = report is not None and report.all_passed
+
+        state["heldout_test_total"] = total
+        state["heldout_test_passed_count"] = passed_count
+        state["heldout_test_passed"] = bool(all_passed)
+        state["heldout_best_perf"] = (
+            result.perf_counters.to_dict() if result.perf_counters is not None else None
+        )
+        state["heldout_best_wall_clock_ms"] = result.wall_clock_ms

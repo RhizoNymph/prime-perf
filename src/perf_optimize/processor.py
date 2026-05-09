@@ -167,6 +167,11 @@ class TurnProcessor:
             if best_perf_dict is None:
                 updates["best_perf_dict"] = agent_perf
                 updates["best_wall_clock_ms"] = result.wall_clock_ms
+                # Track the source that produced this best so the held-out
+                # cleanup pass can recompile it. Sibling branch ``feat/scaling-test``
+                # rewrites the best-tracking logic; keep this assignment co-located
+                # with the existing best update so the merge stays small.
+                updates["best_candidate_source"] = code
             else:
                 if _is_better_submission(
                     selection_metric=selection_metric,
@@ -178,6 +183,7 @@ class TurnProcessor:
                 ):
                     updates["best_perf_dict"] = agent_perf
                     updates["best_wall_clock_ms"] = result.wall_clock_ms
+                    updates["best_candidate_source"] = code
 
             if feedback_mode == "correctness":
                 feedback = format_correctness_feedback(turn, max_turns)
